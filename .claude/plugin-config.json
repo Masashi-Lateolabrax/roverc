@@ -1,0 +1,16 @@
+{
+  "commit": {
+    "allowed_branches": ["feature/*"]
+  },
+  "identity": {
+    "git_email": "claude@anthropic.com",
+    "git_name": "Claude",
+    "ssh_key": "~/.ssh/gitea_claude"
+  },
+  "remotes": {
+    "origin": {
+      "repo": "perciformes/roverc",
+      "url": "http://git.perciformes-family.vpn"
+    }
+  }
+}
