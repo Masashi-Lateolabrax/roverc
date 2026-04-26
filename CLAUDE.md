@@ -4,6 +4,26 @@
 
 学部生（就職予定）の卒業研究のため、M5StickC Plus2 + RoverC（メカナム車）+ PC（Python, LAN経由）を題材に、研究テーマ・実装プラットフォームを構築する。
 
+## Information Architecture
+
+`CLAUDE.md` stays compact. Detail lives in one of the four stores below — when adding information, pick the one whose purpose matches.
+
+- **Docs** — Long-lived knowledge that is expensive to obtain or reproduce, and that collaborators need to share. Code design decisions (settled through dialogue), experiment results (long to run), literature surveys (long to research), development policies (settled through dialogue). *(The plugin is agnostic to the documentation tool — Zola, mdBook, Sphinx, plain markdown in `docs/`, etc. Each project picks its own.)*
+- **Memory** (`.claude/memories/` project; `~/.claude/memories/` global) — The AI self-reinforcement and reference system. Entries are markdown files in three subfolders: `static/unfold/` (always injected, with how-to detail), `static/fold/` (always injected as pointer only — for handoff notes, file trees, reference material that should be available every session), `dynamic/` (injected on semantic match with the prompt). One entry = one theme. Global memories cross projects.
+- **Skills** (`.claude/skills/<name>/SKILL.md`) — Named bundles of task-specific instructions with tool-permission scoping. Each `SKILL.md` has a `description` explaining what the skill does and `allowed-tools` listing the tools it may use. Examples from this plugin: `commit`, `pull-request`, `issues`, `clean-branch`. **Skills do not always fire on their own**, so a project's `CLAUDE.md` typically keeps a dispatch table (e.g. *"When committing, use `lab-tool-cc-plugin:commit`"*) to reinforce invocation. Those reinforcement entries are load-bearing and belong in `CLAUDE.md` — they are not candidates for offloading.
+- **CLAUDE.md** (this file) — Kept compact. Project-specific operating context that must load in every session: what the project is, which stores exist, and a dispatch table pointing to the relevant store or skill for each concern. Behavior-shaping rules belong in Memory, not here.
+
+## ストア / スキル ディスパッチ
+
+- **コミット作成時** → `lab-tool-cc-plugin:commit` を使用
+- **PR 作成・操作時** → `lab-tool-cc-plugin:pull-request` を使用
+- **Issue 操作時** → `lab-tool-cc-plugin:issues` を使用
+- **Memory エントリ操作時** → `lab-tool-cc-plugin:memory` を使用
+- **プラットフォーム bring-up 詳細** → `docs/platform_bringup.md`
+- **別ライン研究プログラム候補（進学予定学生向け）** → `docs/async_stereo_interpolation.md`
+- **RoverC ハード仕様** → `docs/roverc_datasheet.pdf` / `docs/roverc_pro_datasheet.pdf` / `docs/roverc_i2c_protocol.pdf`
+- **StickC Plus2 schematic** → `docs/stickc_plus2_schematic.pdf`
+
 ## 関係者
 
 - **指導者**（このリポジトリのオーナー）：複雑系・スワーム研究の経験を持つ。研究プログラムの設計者
