@@ -1,0 +1,4 @@
+.claude/memories/
+.claude/settings.local.json
+
+*.tmp.*
