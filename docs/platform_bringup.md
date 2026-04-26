@@ -1,0 +1,165 @@
+# プラットフォーム bring-up 計画（指導者作業）
+
+最終更新: 2026-04-26
+
+## 位置付け
+
+学生卒研の前段階として、**指導者が単独で実施**するハード・ソフトウェア基盤整備。各段で動く成果物を残し、学生に検証済プラットフォームとして引き渡す。学生は引き渡し後、Mediator 層（複数オペレータ UI、同期記録、ベースライン Mediator、実験運営）に集中できる。
+
+## 5段ロードマップ
+
+### 段1: RoverC 遠隔操作（StickC Plus2 サーバ + Python クライアント）
+
+**目的**: PC から StickC Plus2 経由で RoverC を動かせる最小構成
+
+**技術構成**:
+- StickC Plus2: WiFi STA で AP 接続、HTTP or UDP サーバ
+- Python: requests / asyncio / socket でコマンド送信
+- StickC ↔ RoverC は I2C（HAT バス自動接続、0x38、レジスタ 0x00–0x03 = Motor1–4 speed、`roverc_i2c_protocol.pdf` 参照）
+- Plus2 P1 STICKIO ヘッダは無印と同一配列（pin3=G26/SCL, pin5=G0/SDA）、`stickc_plus2_schematic.pdf` で確認済。`Wire.begin(0, 26)` でそのまま動作見込み
+- RoverC 公式 docs に Plus2 互換明記なし（後発のため更新漏れ）。電気的互換は schematic で確認済、段1 で実機動作確認を行う
+
+**成果物**:
+- StickC Plus2 スケッチ（Arduino、`Wire` で I2C、`WiFi` でサーバ）
+- Python ラジコンクライアント（最初は WASD キー入力）
+- 動作確認動画
+
+**完了基準**: PC から WASD で前後・左右斜行・旋回が安定動作
+
+---
+
+### 段2: カメラ単眼 + Python 画像取得
+
+**目的**: Timer Camera X 1 台で PC に画像配信
+
+**技術構成**:
+- Timer Camera X: WiFi STA、CameraWebServer 派生で MJPEG 配信
+- Python: OpenCV `cv2.VideoCapture("http://.../mjpeg")` or 自前 MJPEG パーサ
+
+**成果物**:
+- Camera スケッチ（M5Stack 公式 example 派生）
+- Python live ビューア
+- フレームレート計測ログ
+
+**完了基準**: VGA 30fps 安定、PC 表示遅延 < 200ms
+
+---
+
+### 段3: カメラ時間同期（有線 I2C master time）
+
+**目的**: フレームごとの撮影時刻を共通時計系に整合
+
+**技術構成**:
+- StickC Plus2 を I2C master、カメラを slave（HY2.0 GPIO 13=SCL, 4=SDA を I2C 周辺、アドレス 0x40）
+- StickC Plus2 が 1Hz 程度で `esp_timer_get_time()` をブロードキャスト書き込み
+- カメラ側 `onReceive` でローカルタイマーオフセット計算
+- 各 `camera_fb_t.timestamp` をマスタ時刻系に変換し画像と一緒に PC へ配信
+
+**成果物**:
+- StickC タイムマスタコード
+- カメラ I2C slave 受信コード
+- タイムスタンプ付き画像ストリーム
+
+**完了基準**: 視野内 LED フラッシュ等でフレーム時刻整合性を実測、ジッタ < 5ms
+
+---
+
+### 段4: ステレオ化（カメラ増設）
+
+**目的**: 2 台ステレオリグ + 校正
+
+**技術構成**:
+- 2 台目を同 I2C バスに slave 0x41 で追加（0x38 RoverC, 0x40 Cam L, 0x41 Cam R の multi-slave）
+- ステレオマウント設計（基線長、剛性、RoverC 搭載位置）
+- OpenCV `cv2.stereoCalibrate` で校正
+
+**成果物**:
+- ステレオリグ（3D モデル + 実機）
+- 校正パラメータ + 校正手順書
+- 時刻整合ステレオペア配信パイプライン
+
+**完了基準**: チェッカーボード校正済、reproject error < 1px
+
+---
+
+### 段5: 性能評価
+
+**目的**: プラットフォーム全体の特性化
+
+**評価項目**:
+- 同期ジッタ実測（ms/μs スケール）
+- フレームレート、欠損率
+- エンドツーエンドレイテンシ（Python コマンド → モータ動作 → 画像反映）
+- 校正精度（reproject error）
+- Grove 5V ドロップ実測（バッテリ容量検証、Option A→B エスカレーション判断材料）
+- セッション持続時間（バッテリ持ち、モータ + カメラ同時動作下）
+
+**成果物**:
+- 性能レポート（CLAUDE.md「データ品質」評価軸と整合）
+- 学生向けプラットフォーム使用ドキュメント
+- 既知の限界・未検証項目リスト
+
+**完了基準**: 全評価項目に数値、再現可能性確認、Grove 5V 容量判定済
+
+---
+
+## 学生引き渡し時の interface
+
+引き渡し成果物:
+1. 動作確認済ハード（StickC Plus2 + RoverC + ステレオカメラリグ）
+2. ファームウェア（StickC Plus2 スケッチ、カメラスケッチ、書き込み手順）
+3. Python ラッパライブラリ（`roverc.move(...)`, `cameras.get_synced_pair()` 等）
+4. 校正ファイル + 校正手順書
+5. 性能レポート（既知の限界・未検証項目を明示）
+
+学生はこの上に Mediator 層（複数オペレータ UI、同期記録、ベースライン Mediator、実験運営）を構築する。
+
+---
+
+## タイムライン
+
+各段の完了目標日は指導者の作業時間次第。**TBD**（要確定）。確定後本ドキュメントを更新する。
+
+学生作業（CLAUDE.md「学生作業の年間スケジュール」）との整合確認用に、以下を仮置き：
+
+| 段 | 仮目標 | 学生側で前進可能になるもの |
+|---|---|---|
+| 段1 | TBD | Python クライアント側の WASD UI（学生が複数オペレータ UI のベースに発展可） |
+| 段2 | TBD | 単眼画像での視覚的タスク試行 |
+| 段3 | TBD | 時刻整合データ取得 |
+| 段4 | TBD | ステレオデータ取得・校正手順実演 |
+| 段5 | TBD | プラットフォーム全部 |
+
+---
+
+## リスクと escalation 経路
+
+### Grove 5V 容量未確定
+- 段1〜段3 で実測。不足時はバッテリ直タップ + カメラ側 boost コンバータに escalate
+- RoverC バッテリ実装：3.7V 700mAh（16340、Pro 仕様準拠）。同時運用 15〜30 分見込み
+- StickC Plus2 内蔵バッテリ：200mAh（無印 80–95mAh の 2 倍以上）→ Plus2 単体駆動時のセッション持続が改善
+- 詳細: CLAUDE.md ハード調査結果セクション
+
+### I2C bus 競合
+- StickC Plus2 master が RoverC（0x38）+ カメラ（0x40, 0x41）を駆動
+- バス占有率は 5% 未満想定（モータ 50Hz × 5byte + 時刻 1Hz × 8byte）
+- 競合発生時はモータ更新と時刻配信のタイミング設計で分離
+- 最悪ケース: カメラ用に別 I2C バス（Plus2 Grove GPIO 32/33 を使う）
+
+### 校正ドリフト
+- リグ振動・温度変化で校正パラメータがずれる可能性
+- 段5 で経時変化測定、必要なら定期再校正フロー追加
+
+### Timer Camera X 固有の検証不足
+- カメラ × WiFi 同居の干渉報告あり（espressif/esp32-camera issue #620、`fb_count=2` で回避）
+- 段2 で要確認
+
+---
+
+## 参照資料（このリポジトリ内）
+
+- `../CLAUDE.md`: 上位プロジェクト文書、ハード調査結果詳細
+- `../roverc_datasheet.pdf`: RoverC（K036）公式仕様書
+- `../roverc_pro_datasheet.pdf`: RoverC-Pro（K036-B）公式仕様書
+- `../roverc_i2c_protocol.pdf`: RoverC I2C コマンドプロトコル
+- `../stickc_plus2_schematic.pdf`: M5StickC Plus2 公式 schematic（v0.5）
