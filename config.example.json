@@ -1,0 +1,15 @@
+{
+  "wifi": {
+    "ssid": "YourSSID",
+    "password": "YourPassword"
+  },
+  "server": {
+    "host": "192.168.1.50",
+    "port": 4210
+  },
+  "control": {
+    "rate_hz": 50,
+    "failsafe_ms": 200,
+    "max_motor": 60
+  }
+}
