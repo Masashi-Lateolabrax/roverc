@@ -1,0 +1,18 @@
+{
+  "autoMemoryEnabled": false,
+  "permissions": {
+    "ask": [
+      "Bash(rm -rf*)",
+      "Bash(rm -r *)",
+      "Bash(rm *)"
+    ],
+    "deny": [
+      "Bash(git push*)",
+      "Bash(git push)",
+      "Bash(git add*)",
+      "Bash(git add)",
+      "Bash(git commit*)",
+      "Bash(git commit)"
+    ]
+  }
+}
