@@ -5,3 +5,6 @@
 
 config.json
 src/roverc_server/secrets.h
+
+.venv/
+__pycache__/

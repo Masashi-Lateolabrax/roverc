@@ -15,12 +15,12 @@ The RoverC HAT plugs into the bottom 8-pin header of the StickC Plus2:
 ```sh
 # from repo root, after editing config.json
 arduino-cli lib install ArduinoJson
-python3 scripts/gen_secrets.py
-arduino-cli compile --fqbn esp32:esp32:m5stack_stickc_plus2 src/roverc_server
-arduino-cli upload -p /dev/ttyACM0 --fqbn esp32:esp32:m5stack_stickc_plus2 src/roverc_server
+./flash.sh                  # auto-detect port
+./flash.sh /dev/ttyACM0     # explicit port
+./flash.sh --list           # show connected boards
 ```
 
-`secrets.h` is generated from `config.json` (gitignored). Re-run `gen_secrets.py` whenever WiFi credentials, port, or control parameters change.
+`secrets.h` is generated from `config.json` (gitignored). Re-run `uv run scripts/gen_secrets.py` whenever WiFi credentials, port, or control parameters change.
 
 ## UI
 
@@ -51,15 +51,18 @@ Buttons:
 Single JSON packet, UTF-8:
 
 ```json
-{"t": 1714200000.123, "vx": 0.40, "vy": 0.00, "wz": 0.00}
+{"t": 1714200000.123, "vx": 0.40, "vy": 0.00, "wz": 0.00, "mx": 60}
 ```
 
 - `vx` forward, `vy` strafe right, `wz` yaw rate; all in [-1, 1].
-- Server applies mecanum inverse kinematics, scales to `[-MAX_MOTOR, MAX_MOTOR]`, and writes 4 signed bytes to RoverC at 50 Hz.
+- `mx` (optional) per-packet motor cap (0..127). If absent, the server falls
+  back to compile-time `MAX_MOTOR` from `secrets.h`.
+- Server applies mecanum inverse kinematics, scales to `[-mx, mx]`, and writes
+  4 signed bytes to RoverC at 50 Hz.
 - No packet within `FAILSAFE_MS` -> all motors set to 0.
 
 ## Bring-up notes
 
 - Mecanum sign convention varies by chassis wiring. If a wheel spins the wrong way, flip the corresponding `SIGN_M*` constant in `roverc_server.ino`.
 - Start with `control.max_motor` low (60) in config.json, raise after sign verification.
-- DHCP may give a different IP on each boot. Update `server.host` in config.json after reading the IP from the LCD, then restart `teleop.py`.
+- DHCP may give a different IP on each boot. Read it from the LCD and pass it to `teleop.py` (prompt or `--host`).

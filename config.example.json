@@ -4,12 +4,17 @@
     "password": "YourPassword"
   },
   "server": {
-    "host": "192.168.1.50",
     "port": 4210
   },
   "control": {
     "rate_hz": 50,
     "failsafe_ms": 200,
-    "max_motor": 60
+    "max_motor": 60,
+    "motor_trim": {
+      "front_left": 0.0,
+      "front_right": 1.0,
+      "rear_left": 1.0,
+      "rear_right": 1.0
+    }
   }
 }
