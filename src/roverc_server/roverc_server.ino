@@ -6,6 +6,9 @@
 #include <WiFiUdp.h>
 #include <Wire.h>
 #include <ArduinoJson.h>
+#include <Preferences.h>
+#include <math.h>
+#include <string.h>
 
 #include "secrets.h"
 
@@ -35,6 +38,28 @@ static constexpr uint8_t  CAM_TOKEN_BYTE = 0x01;
 static uint32_t g_next_token_ms = 0;
 static uint8_t  g_token_target = 0;  // 0=left, 1=right
 
+// 25 Hz binary telemetry push to the last UDP sender (the PC client). 25 Hz
+// is slow enough to coexist with two MJPEG streams on the same 2.4 GHz radio
+// without obvious airtime contention. Disabled by default; PC opts in via
+// `cfg.tel = true`.
+static constexpr uint32_t TEL_PERIOD_MS = 40;
+static constexpr uint8_t  TEL_MAGIC = 0xD0;
+static uint32_t g_next_tel_ms = 0;
+
+// Binary polynomial-coefficient packet format (sent as its own UDP datagram,
+// not embedded in the JSON cfg envelope):
+//   [0]        magic 0xC0
+//   [1]        wheel  (0..3 = FL FR RL RR)
+//   [2]        dir    (0=fwd, 1=bwd)
+//   [3]        phase  (0=KICK, 1=STEADY, 2=BRAKE)
+//   [4..67]    a[16]  little-endian float, row-major (j*4+k)  -- f-poly
+//   [68..131]  b[16]  little-endian float, row-major          -- g-poly
+// Total 132 bytes. Idempotent on (wheel,dir,phase); PC repeats each chunk to
+// absorb LWIP rx-queue drops (rx queue ~6-8 packets), and 24 chunks form the
+// full coefficient table.
+static constexpr uint8_t  POLY_CHUNK_MAGIC = 0xC0;
+static constexpr size_t   POLY_CHUNK_BYTES = 132;
+
 // Per-wheel sign flips. Adjust during bring-up if a wheel spins the wrong way.
 static constexpr int8_t SIGN_M[4] = {+1, +1, +1, +1};  // FL, FR, RL, RR
 
@@ -50,16 +75,49 @@ struct Motion {
 struct ServerConfig {
   int max_motor = MAX_MOTOR;
   int kick_dur_ms = 0;
-  float trim_fwd[4] = {1.0f, 1.0f, 1.0f, 1.0f};
-  float trim_bwd[4] = {1.0f, 1.0f, 1.0f, 1.0f};
-  float kick_fwd[4] = {1.0f, 1.0f, 1.0f, 1.0f};
-  float kick_bwd[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+  int brake_dur_ms = 100;
+  bool tel_en = false;
 };
 
+// Per-wheel phase machine. KICK breaks stiction at sign rising edge, STEADY
+// applies user trim during sustained drive, BRAKE applies a counter-pulse
+// (linear ramp envelope, encoded in the polynomial t-axis) when s drops to 0,
+// IDLE is the rest state.
+enum Phase : uint8_t { PH_IDLE = 0, PH_KICK = 1, PH_STEADY = 2, PH_BRAKE = 3 };
+
 struct MotorState {
+  Phase phase = PH_IDLE;
+  uint32_t phase_start_ms = 0;
   int8_t last_sign = 0;
-  uint32_t kick_start_ms = 0;
-  bool in_kick = false;
+  float last_s_norm = 0.0f;  // m_i * norm from previous tick (snapshot source)
+  float s_pre = 0.0f;        // normalized s at BRAKE entry (∈ [-1, 1])
+  int8_t s_pre_sign = 0;     // sign of s_pre (selects brake fwd vs bwd cell)
+};
+
+// (s, t) bivariate polynomial up to total-order (3, 3): degree ≤ 3 in s AND
+// in t separately, so 4*4 = 16 monomials per polynomial, two polynomials per
+// (wheel, dir, phase) cell. Coefficients arrive from the PC; defaults are
+// scalar-identity so behaviour matches P1 until calibrate.py pushes anything.
+//   p_norm(s, t) = s · f(s, t) + g(s, t)
+//   f(s, t) = sum_{j,k} a[j][k] * s^j * t^k
+//   g(s, t) = sum_{j,k} b[j][k] * s^j * t^k
+// `s` is the per-wheel mecanum-mixed value normalized to [-1, 1]; `t` is
+// phase-relative time in seconds; the I2C motor command is then
+// clamp(p_norm * max_motor) (with the SIGN_M[i] flip).
+struct Poly {
+  float a[4][4];
+  float b[4][4];
+};
+
+struct PhaseCoefs {
+  Poly fwd;
+  Poly bwd;
+};
+
+struct WheelCoefs {
+  PhaseCoefs kick;
+  PhaseCoefs steady;
+  PhaseCoefs brake;
 };
 
 struct CameraState {
@@ -86,12 +144,16 @@ static uint8_t g_probe_fails_since_last_ok = 0;
 static Motion g_cmd;
 static ServerConfig g_cfg;
 static MotorState g_motor_state[4];
+static WheelCoefs g_poly[4];
 static uint32_t g_last_packet_ms = 0;
 static uint32_t g_packets_received = 0;
 static uint32_t g_configs_received = 0;
+static uint32_t g_poly_chunks_received = 0;
 static IPAddress g_last_sender;
 static uint16_t g_last_sender_port = 0;
 static int8_t g_motors[4] = {0, 0, 0, 0};
+// Last per-wheel normalized command (m_i * norm), telemetry "s" channel.
+static float g_s_norm[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 
 static CameraState g_cam_left = {CAM_ADDR_LEFT};
 static CameraState g_cam_right = {CAM_ADDR_RIGHT};
@@ -113,14 +175,114 @@ static float clampf(float v, float lo, float hi) {
   return v;
 }
 
-static void parse_array4(JsonArrayConst arr, float out[4], float lo, float hi) {
-  if (arr.isNull() || arr.size() < 4) return;
+// Evaluate Σ c[j][k] * s^j * t^k over j,k ∈ {0..3}.
+static float eval_poly_part(const float c[4][4], float s, float t) {
+  float result = 0.0f;
+  float s_pow = 1.0f;
+  for (int j = 0; j < 4; ++j) {
+    float t_pow = 1.0f;
+    for (int k = 0; k < 4; ++k) {
+      result += c[j][k] * s_pow * t_pow;
+      t_pow *= t;
+    }
+    s_pow *= s;
+  }
+  return result;
+}
+
+// p_norm(s, t) = s * f(s, t) + g(s, t).
+static float eval_poly(const Poly &p, float s, float t) {
+  float f = eval_poly_part(p.a, s, t);
+  float g = eval_poly_part(p.b, s, t);
+  return s * f + g;
+}
+
+// Reset every cell to scalar identity that reproduces P1 default behaviour:
+// KICK / STEADY are p_norm = s (i.e. a[0][0] = 1, all else 0), BRAKE is fully
+// zero (no active brake until PC pushes coefficients).
+static void init_poly_defaults() {
+  memset(g_poly, 0, sizeof(g_poly));
   for (int i = 0; i < 4; ++i) {
-    float v = arr[i] | 1.0f;
-    out[i] = clampf(v, lo, hi);
+    g_poly[i].kick.fwd.a[0][0]   = 1.0f;
+    g_poly[i].kick.bwd.a[0][0]   = 1.0f;
+    g_poly[i].steady.fwd.a[0][0] = 1.0f;
+    g_poly[i].steady.bwd.a[0][0] = 1.0f;
+    // BRAKE: zero by default.
   }
 }
 
+// Legacy scalar trim/kick from JSON cfg packets land here -- they overwrite
+// only the constant term a[0][0] of the corresponding STEADY/KICK cell, so
+// the polynomial framework and the existing teleop sliders coexist.
+static void poly_set_const_a00(int wheel, int phase_idx, int dir_idx, float v) {
+  if (wheel < 0 || wheel >= 4) return;
+  PhaseCoefs *pc = nullptr;
+  switch (phase_idx) {
+    case 0: pc = &g_poly[wheel].kick; break;
+    case 1: pc = &g_poly[wheel].steady; break;
+    case 2: pc = &g_poly[wheel].brake; break;
+    default: return;
+  }
+  Poly *p = (dir_idx == 0) ? &pc->fwd : &pc->bwd;
+  p->a[0][0] = v;
+}
+
+static void parse_array4(JsonArrayConst arr, float def, float lo, float hi,
+                         int phase_idx, int dir_idx) {
+  if (arr.isNull() || arr.size() < 4) return;
+  for (int i = 0; i < 4; ++i) {
+    float v = arr[i] | def;
+    poly_set_const_a00(i, phase_idx, dir_idx, clampf(v, lo, hi));
+  }
+}
+
+// Apply a single binary 0xC0 polynomial chunk. Rejects (and logs) any chunk
+// whose 32 floats include a non-finite value rather than letting NaN/Inf get
+// multiplied into the I2C motor stream.
+static void apply_poly_chunk(const uint8_t *buf, int n) {
+  if (n < static_cast<int>(POLY_CHUNK_BYTES)) return;
+  uint8_t wheel = buf[1];
+  uint8_t dir   = buf[2];
+  uint8_t phase = buf[3];
+  if (wheel >= 4 || dir >= 2 || phase >= 3) {
+    Serial.printf("poly chunk reject: bad index w=%u d=%u p=%u\n", wheel, dir, phase);
+    return;
+  }
+
+  float a[16], b[16];
+  memcpy(a, buf + 4,  64);
+  memcpy(b, buf + 68, 64);
+  for (int i = 0; i < 16; ++i) {
+    if (!isfinite(a[i]) || !isfinite(b[i])) {
+      Serial.printf("poly chunk reject: non-finite at w=%u d=%u p=%u i=%d\n",
+                    wheel, dir, phase, i);
+      return;
+    }
+  }
+
+  PhaseCoefs *pc = nullptr;
+  switch (phase) {
+    case 0: pc = &g_poly[wheel].kick; break;
+    case 1: pc = &g_poly[wheel].steady; break;
+    case 2: pc = &g_poly[wheel].brake; break;
+  }
+  Poly *target = (dir == 0) ? &pc->fwd : &pc->bwd;
+  memcpy(target->a, a, 64);
+  memcpy(target->b, b, 64);
+  g_poly_chunks_received++;
+}
+
+// Per-wheel phase-aware motor command. Phase machine drives the (wheel, dir,
+// phase) selection of polynomial cells; the polynomial in (s, t) emits
+// p_norm ∈ ℝ which is then scaled by max_motor and clamped.
+//
+// Transitions:
+//   IDLE   -> KICK   on sign 0 -> nonzero
+//   STEADY -> BRAKE  on sign nonzero -> 0 (snapshot last_s_norm as s_pre)
+//   *      -> KICK   on sign reversal (no explicit BRAKE; reverse drive
+//                    dumps residual energy via H-bridge back-EMF braking)
+//   KICK   -> STEADY on tau >= kick_dur_ms
+//   BRAKE  -> IDLE   on tau >= brake_dur_ms
 static void compute_motors(float vx, float vy, float wz, uint32_t now, int8_t out[4]) {
   float m[4] = {
     vx + vy + wz,
@@ -129,33 +291,118 @@ static void compute_motors(float vx, float vy, float wz, uint32_t now, int8_t ou
     vx + vy - wz,
   };
   float peak = fmaxf(fmaxf(fabsf(m[0]), fabsf(m[1])), fmaxf(fabsf(m[2]), fabsf(m[3])));
-  float scale = (peak > 1.0f) ? (1.0f / peak) : 1.0f;
-  scale *= static_cast<float>(g_cfg.max_motor);
+  float norm = (peak > 1.0f) ? (1.0f / peak) : 1.0f;
+  float max_m = static_cast<float>(g_cfg.max_motor);
 
   for (int i = 0; i < 4; ++i) {
-    int8_t sign = (m[i] > 0.0f) ? 1 : (m[i] < 0.0f ? -1 : 0);
-    if (sign != 0 && sign != g_motor_state[i].last_sign) {
-      g_motor_state[i].kick_start_ms = now;
-      g_motor_state[i].in_kick = true;
-    }
-    if (sign == 0) {
-      g_motor_state[i].in_kick = false;
-    } else if (g_motor_state[i].in_kick &&
-               (now - g_motor_state[i].kick_start_ms) >= static_cast<uint32_t>(g_cfg.kick_dur_ms)) {
-      g_motor_state[i].in_kick = false;
-    }
-    g_motor_state[i].last_sign = sign;
+    float s = m[i] * norm;       // normalized command, ∈ [-1, 1]
+    int8_t sign = (s > 0.0f) ? 1 : (s < 0.0f ? -1 : 0);
+    MotorState &st = g_motor_state[i];
 
-    float tr;
-    if (sign == 0) {
-      tr = 1.0f;  // unused
-    } else if (g_motor_state[i].in_kick) {
-      tr = (sign > 0) ? g_cfg.kick_fwd[i] : g_cfg.kick_bwd[i];
-    } else {
-      tr = (sign > 0) ? g_cfg.trim_fwd[i] : g_cfg.trim_bwd[i];
+    if (st.last_sign == 0 && sign != 0) {
+      st.phase = PH_KICK;
+      st.phase_start_ms = now;
+    } else if (st.last_sign != 0 && sign == 0 && st.phase != PH_BRAKE) {
+      st.phase = PH_BRAKE;
+      st.phase_start_ms = now;
+      st.s_pre = st.last_s_norm;
+      st.s_pre_sign = st.last_sign;
+    } else if (st.last_sign != 0 && sign != 0 && sign != st.last_sign) {
+      // Sign reversal: jump straight to KICK in the new direction. The
+      // H-bridge dissipates the previous direction's residual energy when it
+      // accelerates the wheel the other way, so an explicit BRAKE phase
+      // would just delay the user-commanded reversal.
+      st.phase = PH_KICK;
+      st.phase_start_ms = now;
     }
-    out[i] = clamp_int8(static_cast<int>(m[i] * scale * tr)) * SIGN_M[i];
+
+    uint32_t tau = now - st.phase_start_ms;
+    if (st.phase == PH_KICK && tau >= static_cast<uint32_t>(g_cfg.kick_dur_ms)) {
+      st.phase = PH_STEADY;
+      st.phase_start_ms = now;
+      tau = 0;
+    } else if (st.phase == PH_BRAKE && tau >= static_cast<uint32_t>(g_cfg.brake_dur_ms)) {
+      st.phase = PH_IDLE;
+      st.phase_start_ms = now;
+      tau = 0;
+    }
+
+    int8_t out_i = 0;
+    float t_sec = static_cast<float>(tau) / 1000.0f;
+    switch (st.phase) {
+      case PH_KICK: {
+        const Poly &poly = (sign > 0) ? g_poly[i].kick.fwd : g_poly[i].kick.bwd;
+        float p_norm = eval_poly(poly, s, t_sec);
+        out_i = clamp_int8(static_cast<int>(p_norm * max_m));
+        break;
+      }
+      case PH_STEADY: {
+        const Poly &poly = (sign > 0) ? g_poly[i].steady.fwd : g_poly[i].steady.bwd;
+        float p_norm = eval_poly(poly, s, t_sec);
+        out_i = clamp_int8(static_cast<int>(p_norm * max_m));
+        break;
+      }
+      case PH_BRAKE: {
+        const Poly &poly = (st.s_pre_sign > 0) ? g_poly[i].brake.fwd : g_poly[i].brake.bwd;
+        // BRAKE polynomial takes the snapshot s_pre as its s-input -- the
+        // current `s` is zero so passing it would collapse f(s,t)·s to zero
+        // and only g(s,t) would survive.
+        float p_norm = eval_poly(poly, st.s_pre, t_sec);
+        out_i = clamp_int8(static_cast<int>(p_norm * max_m));
+        break;
+      }
+      case PH_IDLE:
+      default:
+        break;
+    }
+
+    out[i] = out_i * SIGN_M[i];
+    st.last_sign = sign;
+    st.last_s_norm = s;
+    g_s_norm[i] = s;
   }
+}
+
+// Telemetry binary packet (49 bytes total, magic 0xD0):
+//   [0]      0xD0
+//   [1..4]   uint32 LE  millis()
+//   [5..8]   float       gz_dps   (raw gyro Z, PC subtracts bias)
+//   [9..12]  uint8[4]    phase    (PH_*)
+//   [13..28] float[4]    s_pre    (normalized BRAKE snapshot per wheel)
+//   [29..32] int8[4]     motor    (commanded I2C value)
+//   [33..48] float[4]    s_norm   (current-tick normalized s, ∈ [-1, 1])
+static void push_telemetry() {
+  if (!g_cfg.tel_en) return;
+  if (g_last_sender == IPAddress(0, 0, 0, 0) || g_last_sender_port == 0) return;
+
+  uint8_t buf[64];
+  size_t off = 0;
+  buf[off++] = TEL_MAGIC;
+
+  uint32_t t = millis();
+  memcpy(buf + off, &t, 4); off += 4;
+
+  float gz_dps = 0.0f;
+  if (M5.Imu.update()) {
+    float gx, gy, gz;
+    M5.Imu.getGyro(&gx, &gy, &gz);
+    gz_dps = gz;
+  }
+  memcpy(buf + off, &gz_dps, 4); off += 4;
+
+  for (int i = 0; i < 4; ++i) buf[off++] = static_cast<uint8_t>(g_motor_state[i].phase);
+  for (int i = 0; i < 4; ++i) {
+    float v = g_motor_state[i].s_pre;
+    memcpy(buf + off, &v, 4); off += 4;
+  }
+  for (int i = 0; i < 4; ++i) buf[off++] = static_cast<uint8_t>(g_motors[i]);
+  for (int i = 0; i < 4; ++i) {
+    memcpy(buf + off, &g_s_norm[i], 4); off += 4;
+  }
+
+  udp.beginPacket(g_last_sender, g_last_sender_port);
+  udp.write(buf, off);
+  udp.endPacket();
 }
 
 // Wire.end()+begin() alone does NOT recover a physically stuck I2C bus
@@ -308,10 +555,23 @@ static void apply_config(JsonObjectConst cfg) {
     if (kd > 2000) kd = 2000;
     g_cfg.kick_dur_ms = kd;
   }
-  parse_array4(cfg["tf"], g_cfg.trim_fwd, 0.0f, 4.0f);
-  parse_array4(cfg["tb"], g_cfg.trim_bwd, 0.0f, 4.0f);
-  parse_array4(cfg["kf"], g_cfg.kick_fwd, 0.0f, 4.0f);
-  parse_array4(cfg["kb"], g_cfg.kick_bwd, 0.0f, 4.0f);
+  if (cfg["bdur"].is<int>()) {
+    int bd = cfg["bdur"];
+    if (bd < 0) bd = 0;
+    if (bd > 2000) bd = 2000;
+    g_cfg.brake_dur_ms = bd;
+  }
+  if (cfg["tel"].is<bool>()) {
+    g_cfg.tel_en = cfg["tel"];
+  }
+  // Legacy scalar trim/kick paths land in the constant term of the relevant
+  // polynomial cell. `bf`/`bb` (BRAKE scalar) are intentionally not exposed
+  // here -- BRAKE coefficients are pushed via the binary 0xC0 chunk path so
+  // calibrate.py owns them entirely.
+  parse_array4(cfg["tf"], 1.0f, 0.0f, 4.0f, /*phase=*/1, /*dir=*/0);
+  parse_array4(cfg["tb"], 1.0f, 0.0f, 4.0f, 1, 1);
+  parse_array4(cfg["kf"], 1.0f, 0.0f, 4.0f, /*phase=*/0, /*dir=*/0);
+  parse_array4(cfg["kb"], 1.0f, 0.0f, 4.0f, 0, 1);
   g_configs_received++;
 }
 
@@ -319,9 +579,19 @@ static void poll_udp() {
   int len = udp.parsePacket();
   if (len <= 0) return;
 
-  static char buf[512];
-  int n = udp.read(buf, sizeof(buf) - 1);
+  static uint8_t buf[512];
+  int n = udp.read(buf, sizeof(buf));
   if (n <= 0) return;
+
+  // Binary polynomial cfg chunk -- magic byte distinguishes it from the
+  // ASCII JSON envelope (which always starts with '{').
+  if (n >= static_cast<int>(POLY_CHUNK_BYTES) && buf[0] == POLY_CHUNK_MAGIC) {
+    apply_poly_chunk(buf, n);
+    return;
+  }
+
+  // JSON path: motion or cfg envelope.
+  if (n >= static_cast<int>(sizeof(buf))) n = sizeof(buf) - 1;
   buf[n] = '\0';
 
   JsonDocument doc;
@@ -344,6 +614,16 @@ static void poll_udp() {
   g_packets_received++;
 }
 
+static char phase_char(Phase p) {
+  switch (p) {
+    case PH_KICK:   return 'K';
+    case PH_STEADY: return 'S';
+    case PH_BRAKE:  return 'B';
+    case PH_IDLE:
+    default:        return 'I';
+  }
+}
+
 static void update_lcd() {
   uint32_t now = millis();
   if (now < g_next_lcd_ms) return;
@@ -360,8 +640,25 @@ static void update_lcd() {
   M5.Display.printf("rx %lu cfg %lu\n",
                     static_cast<unsigned long>(g_packets_received),
                     static_cast<unsigned long>(g_configs_received));
-  M5.Display.printf("m %4d %4d\n", g_motors[0], g_motors[1]);
-  M5.Display.printf("  %4d %4d\n", g_motors[2], g_motors[3]);
+  M5.Display.printf("m%4d%4d%4d%4d\n",
+                    g_motors[0], g_motors[1], g_motors[2], g_motors[3]);
+
+  // Per-wheel phase indicator (KSBI letters for FL FR RL RR). Yellow when
+  // any wheel is currently in BRAKE (lets brake events flash visibly when
+  // the user releases). Cyan when telemetry push is enabled.
+  bool any_brake = false;
+  for (int i = 0; i < 4; ++i) {
+    if (g_motor_state[i].phase == PH_BRAKE) { any_brake = true; break; }
+  }
+  uint16_t ph_color = any_brake ? YELLOW : (g_cfg.tel_en ? CYAN : WHITE);
+  M5.Display.setTextColor(ph_color, BLACK);
+  M5.Display.printf("phase %c%c%c%c poly%4lu\n",
+                    phase_char(g_motor_state[0].phase),
+                    phase_char(g_motor_state[1].phase),
+                    phase_char(g_motor_state[2].phase),
+                    phase_char(g_motor_state[3].phase),
+                    static_cast<unsigned long>(g_poly_chunks_received));
+  M5.Display.setTextColor(WHITE, BLACK);
 
   int bat_pct = M5.Power.getBatteryLevel();
   int bat_mv = M5.Power.getBatteryVoltage();
@@ -386,11 +683,24 @@ void setup() {
   int8_t zero[4] = {0, 0, 0, 0};
   send_motors_i2c(zero);
 
+  // Reclaim NVS used by the previous in-firmware atrim subsystem (now PC
+  // side). Idempotent: noop if the namespace doesn't exist yet.
+  {
+    Preferences p;
+    if (p.begin("atrim", false)) {
+      p.clear();
+      p.end();
+    }
+  }
+
+  init_poly_defaults();
+
   Serial.begin(115200);
   connect_wifi();
 
   g_last_packet_ms = millis() - FAILSAFE_MS - 1;  // start in failsafe
   g_next_tick_ms = millis();
+  g_next_tel_ms = millis();
 }
 
 void loop() {
@@ -419,6 +729,14 @@ void loop() {
     float wz = failsafe ? 0.0f : g_cmd.wz;
     compute_motors(vx, vy, wz, now, g_motors);
     send_motors_i2c(g_motors);
+  }
+
+  if (static_cast<int32_t>(now - g_next_tel_ms) >= 0) {
+    g_next_tel_ms += TEL_PERIOD_MS;
+    if (static_cast<int32_t>(now - g_next_tel_ms) > 200) {
+      g_next_tel_ms = now + TEL_PERIOD_MS;  // catch up after a stall
+    }
+    push_telemetry();
   }
 
   if (static_cast<int32_t>(now - g_next_cam_tick_ms) >= 0) {
