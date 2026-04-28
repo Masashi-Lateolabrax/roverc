@@ -68,28 +68,28 @@ DIRECTION_PATTERNS: list[tuple[float, float]] = [
 ]
 
 
-def make_trial_order(rng: random.Random, n_trials: int) -> list[int]:
-    """Return a length-n_trials list of pattern indices. Each block of
-    len(DIRECTION_PATTERNS) trials is a separate random shuffle, so every
-    pattern appears equally often within each lap while the order itself
-    is randomised."""
-    order: list[int] = []
-    while len(order) < n_trials:
+def make_trial_plan(rng: random.Random, n_trials: int) -> list[tuple[float, float, float]]:
+    """Return n_trials commanded `(vx, vy, wz)` tuples. Pattern order is
+    block-shuffled so every direction pattern appears equally often per
+    lap, and magnitudes are sampled in `[0.4, 0.7]` so the polynomial
+    sees a range of `s` values (low-speed coefficients are otherwise
+    never excited) while per-leg coast distance stays bounded. wz=0
+    throughout: cost is `|gz|`, so non-zero wz_cmd would require a
+    model-based reference. Generated once per generation and shared
+    across candidates so cost differences reflect coefficient
+    differences, not trial luck."""
+    pattern_order: list[int] = []
+    while len(pattern_order) < n_trials:
         block = list(range(len(DIRECTION_PATTERNS)))
         rng.shuffle(block)
-        order.extend(block)
-    return order[:n_trials]
-
-
-def sample_direction(rng: random.Random, pattern_idx: int) -> tuple[float, float, float]:
-    """Pick magnitude in [0.4, 0.7] so the polynomial sees a range of `s`
-    values (otherwise low-speed coefficients are never excited) while
-    keeping per-leg coast distance bounded. Direction is selected by the
-    caller via `pattern_idx`. No commanded wz: cost function is `|gz|`, so
-    non-zero wz_cmd would require a model-based reference."""
-    dx, dy = DIRECTION_PATTERNS[pattern_idx]
-    mag = rng.uniform(0.4, 0.7)
-    return (mag * dx, mag * dy, 0.0)
+        pattern_order.extend(block)
+    pattern_order = pattern_order[:n_trials]
+    plan: list[tuple[float, float, float]] = []
+    for idx in pattern_order:
+        dx, dy = DIRECTION_PATTERNS[idx]
+        mag = rng.uniform(0.4, 0.7)
+        plan.append((mag * dx, mag * dy, 0.0))
+    return plan
 
 
 def run_trial(
@@ -161,22 +161,19 @@ def evaluate_candidate(
     template: CoefSet,
     client: RoverCClient,
     queue: TelemetryQueue,
-    rng: random.Random,
-    n_trials: int,
+    trial_plan: list[tuple[float, float, float]],
     log: logging.Logger,
 ) -> float:
     coefs = vector_to_coefs(cand_v, template)
     push_to_firmware(coefs, client.send_poly_chunk, client.send_config_dict)
     time.sleep(0.2)  # settle: let firmware finish applying chunks
     costs = []
-    trial_order = make_trial_order(rng, n_trials)
-    for ti in range(n_trials):
-        vx, vy, wz = sample_direction(rng, trial_order[ti])
+    for ti, (vx, vy, wz) in enumerate(trial_plan):
         pkts = run_trial(client, queue, vx, vy, wz)
         c = trial_cost(pkts)
         costs.append(c)
         log.debug("  trial %d/%d  (%.2f, %.2f, %.2f)  cost=%.3f  pkts=%d",
-                  ti + 1, n_trials, vx, vy, wz, c, len(pkts))
+                  ti + 1, len(trial_plan), vx, vy, wz, c, len(pkts))
     return float(sum(costs) / len(costs))
 
 
@@ -261,6 +258,11 @@ def main() -> int:
             gen += 1
             t_gen_start = time.monotonic()
             cands = es.ask()
+            # Same trial sequence (pattern order + magnitudes) for every
+            # candidate in this generation, so cost differences reflect
+            # coefficient differences rather than trial luck. Re-rolled
+            # each generation.
+            trial_plan = make_trial_plan(rng, args.n_trials)
             fits: list[float] = []
             for ci, cand in enumerate(cands):
                 if candidates_done > 0 and args.pause_seconds > 0:
@@ -278,8 +280,8 @@ def main() -> int:
                         time.sleep(0.1)
                     queue.drain()
                 fit = evaluate_candidate(
-                    np.asarray(cand), template, client, queue, rng,
-                    n_trials=args.n_trials, log=log,
+                    np.asarray(cand), template, client, queue,
+                    trial_plan=trial_plan, log=log,
                 )
                 fits.append(fit)
                 candidates_done += 1
