@@ -23,7 +23,8 @@ import json
 import socket
 import threading
 import time
-from typing import Callable, Sequence
+from collections.abc import Sequence
+from typing import Callable
 
 from camera import CameraRegistry
 

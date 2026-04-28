@@ -26,10 +26,13 @@ cp config.example.json config.json
 ### 2. Python 依存
 
 ```sh
-uv sync
+uv sync                # ランタイム依存のみ
+uv sync --group dev    # ruff + pyright も含める
 ```
 
-`pygame` / `numpy` / `cma` が入る。
+ランタイム依存：`pygame`（teleop UI）、`numpy` + `cma`（calibrate の CMA-ES ループ）。
+dev 依存：`ruff`（lint + import 整列）、`pyright`（型検査）。設定は `pyproject.toml` の
+`[tool.ruff]` / `[tool.pyright]` セクション。
 
 ### 3. arduino-cli + コア
 
@@ -81,24 +84,26 @@ uv run src/python_client/teleop.py --host 192.168.1.123 --coefs coefs/identity.j
 `calibrate.py` を流して per-wheel の (3,3) 多項式係数を学習させる。
 
 ```sh
-# 1 時間。ベスト係数は coefs/v1.json に毎ジェネレーション保存される。
+# 世代数と個体数を直接指定。
+# 5 candidates × 10 trials × ~3.5s/trial ≈ 175s/世代、10 世代で 30 分弱。
 uv run python src/python_client/calibrate.py \
     --host 192.168.1.123 \
-    --duration 1h \
+    --generations 10 --pop-size 5 \
     --out coefs/v1.json
 
 # 既存の校正結果から再開 / 洗練
 uv run python src/python_client/calibrate.py \
     --host 192.168.1.123 \
-    --duration 30m \
+    --generations 20 --pop-size 5 \
     --init-coefs coefs/v1.json \
     --out coefs/v2.json
 ```
 
-各候補は 10 trial（ランダム direction × 1.5s 駆動 + 1.5s 解放）で評価され、
-コストは `α·∫|gz| during drive + β·∫|gz| during release`（β=2、解放時の
-残留 yaw を強くペナルティ）。`--out` は毎ジェネレーション上書きされるので、
-中断しても `--init-coefs <out>` で再開できる。
+各候補は `--n-trials`（既定 10）の trial（ランダム direction × 1.5s 駆動 +
+1.5s 解放）で評価され、コストは
+`α·∫|gz| during drive + β·∫|gz| during release`（β=2、解放時の残留 yaw を強く
+ペナルティ）。`--out` は毎ジェネレーション上書きされるので、`Ctrl-C` で中断
+しても直前のベストはそこに残っており、`--init-coefs <out>` で再開できる。
 
 校正後：
 
@@ -130,12 +135,3 @@ CMA-ES が JSON で永続化される 768 次元ベクトルを最適化する�
 ```sh
 uv run python scripts/make_identity_coefs.py coefs/identity.json
 ```
-
-## docs/ 索引
-
-| File | 内容 |
-|---|---|
-| `docs/platform_bringup.md` | 指導者作業のプラットフォーム bring-up 5 段ロードマップ |
-| `docs/camera_streaming_lessons.md` | MJPEG / Wire1 self-heal / I2C bus recovery / XCLK 8MHz など stage-2/3 の debug 知見 |
-| `docs/async_stereo_interpolation.md` | 別ライン研究プログラム候補（進学予定者向け） |
-| `docs/roverc_datasheet.pdf`、`stickc_plus2_schematic.pdf` 等 | ハードウェアリファレンス |

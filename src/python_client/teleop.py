@@ -28,7 +28,8 @@ from camera import (
     CameraStream,
     set_camera_params,
 )
-from coefs import load_json as load_coefs_json, push_to_firmware as push_coefs
+from coefs import load_json as load_coefs_json
+from coefs import push_to_firmware as push_coefs
 from roverc import RoverCClient
 from widgets import Button, ChoiceRow, Slider
 
@@ -55,10 +56,10 @@ class WindowPanel:
     """Pairs an SDL2 Window+Renderer with an offscreen Surface for drawing."""
 
     def __init__(self, title: str, size: tuple[int, int], position=None) -> None:
-        kwargs = {"size": size}
         if position is not None:
-            kwargs["position"] = position
-        self.window = Window(title, **kwargs)
+            self.window = Window(title, size=size, position=position)
+        else:
+            self.window = Window(title, size=size)
         self.renderer = Renderer(self.window)
         self.size = size
         self.surface = pygame.Surface(size)

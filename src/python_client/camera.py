@@ -21,7 +21,6 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 
-
 # esp32-camera framesize_t enum values that we expose. Order matches the C
 # header so the integer is the wire value used by /control?fs=.
 FRAMESIZE_CHOICES: tuple[tuple[str, int, tuple[int, int]], ...] = (

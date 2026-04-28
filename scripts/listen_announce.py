@@ -13,7 +13,6 @@ import socket
 import time
 from pathlib import Path
 
-
 DEFAULT_PORT = 4211
 
 
