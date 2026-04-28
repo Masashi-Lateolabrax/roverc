@@ -84,3 +84,68 @@ class Button:
         pygame.draw.rect(screen, color, self.rect, border_radius=4)
         surf = font.render(self.label, True, (240, 240, 240))
         screen.blit(surf, surf.get_rect(center=self.rect.center))
+
+
+class ChoiceRow:
+    """Horizontal row of mutually exclusive labelled buttons."""
+
+    def __init__(
+        self,
+        rect: pygame.Rect,
+        label: str,
+        choices: list[str],
+        selected_index: int = 0,
+        gap: int = 4,
+    ) -> None:
+        self.rect = rect
+        self.label = label
+        self.choices = choices
+        self.selected_index = max(0, min(len(choices) - 1, selected_index))
+        self.gap = gap
+        self._hover_index: int | None = None
+
+    def _cell_rects(self) -> list[pygame.Rect]:
+        n = len(self.choices)
+        if n == 0:
+            return []
+        total_gap = self.gap * (n - 1)
+        cell_w = max(1, (self.rect.width - total_gap) // n)
+        rects: list[pygame.Rect] = []
+        x = self.rect.x
+        for i in range(n):
+            w = cell_w if i < n - 1 else self.rect.right - x
+            rects.append(pygame.Rect(x, self.rect.y, w, self.rect.height))
+            x += w + self.gap
+        return rects
+
+    def handle_event(self, event: pygame.event.Event) -> bool:
+        cells = self._cell_rects()
+        if event.type == pygame.MOUSEMOTION:
+            self._hover_index = None
+            for i, r in enumerate(cells):
+                if r.collidepoint(event.pos):
+                    self._hover_index = i
+                    break
+            return False
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            for i, r in enumerate(cells):
+                if r.collidepoint(event.pos) and i != self.selected_index:
+                    self.selected_index = i
+                    return True
+        return False
+
+    def draw(self, screen: pygame.Surface, font: pygame.font.Font) -> None:
+        screen.blit(
+            font.render(self.label, True, (220, 220, 220)),
+            (self.rect.x, self.rect.y - 16),
+        )
+        for i, r in enumerate(self._cell_rects()):
+            if i == self.selected_index:
+                bg = (90, 140, 200)
+            elif i == self._hover_index:
+                bg = (75, 75, 90)
+            else:
+                bg = (55, 55, 65)
+            pygame.draw.rect(screen, bg, r, border_radius=3)
+            txt = font.render(self.choices[i], True, (240, 240, 240))
+            screen.blit(txt, txt.get_rect(center=r.center))
