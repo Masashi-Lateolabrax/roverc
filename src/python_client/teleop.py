@@ -28,6 +28,7 @@ from camera import (
     CameraStream,
     set_camera_params,
 )
+from coefs import load_json as load_coefs_json, push_to_firmware as push_coefs
 from roverc import RoverCClient
 from widgets import Button, ChoiceRow, Slider
 
@@ -430,6 +431,13 @@ def main() -> int:
         default=None,
         help='Initial steady trim "FL,FR,RL,RR" (applied to both directions and kicks).',
     )
+    parser.add_argument(
+        "--coefs",
+        type=Path,
+        default=None,
+        help="Polynomial coefficient JSON to push to the firmware at startup. "
+             "Produced by calibrate.py or scripts/make_identity_coefs.py.",
+    )
     args = parser.parse_args()
 
     cfg = load_config(Path(args.config))
@@ -458,6 +466,16 @@ def main() -> int:
 
     camera_registry = CameraRegistry()
     client = RoverCClient(host, port, camera_registry=camera_registry)
+
+    if args.coefs is not None:
+        # Register sender so the firmware accepts cfg/poly packets, then blast
+        # the saved polynomial table. Manual slider tweaks below still write
+        # the constant a[0][0] term of STEADY/KICK cells via the JSON cfg path.
+        client.send_motion(0.0, 0.0, 0.0)
+        time.sleep(0.05)
+        coefs = load_coefs_json(args.coefs)
+        n_sent = push_coefs(coefs, client.send_poly_chunk, client.send_config_dict)
+        print(f"pushed {n_sent} polynomial chunks from {args.coefs}")
 
     pygame.init()
     pygame.display.init()
