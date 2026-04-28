@@ -4,7 +4,7 @@
 *.tmp.*
 
 config.json
-src/roverc_server/secrets.h
+src/*/secrets.h
 
 .venv/
 __pycache__/

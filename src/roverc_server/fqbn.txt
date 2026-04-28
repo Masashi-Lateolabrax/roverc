@@ -1,0 +1,1 @@
+esp32:esp32:m5stack_stickc_plus2

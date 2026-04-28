@@ -20,6 +20,7 @@
 - **Issue 操作時** → `lab-tool-cc-plugin:issues` を使用
 - **Memory エントリ操作時** → `lab-tool-cc-plugin:memory` を使用
 - **プラットフォーム bring-up 詳細** → `docs/platform_bringup.md`
+- **カメラストリーミング debug 知見**（MJPEG / urllib `read1` coalescing / Wire1 self-heal / I2C bus recovery / XCLK 8MHz 等）→ `docs/camera_streaming_lessons.md`
 - **別ライン研究プログラム候補（進学予定学生向け）** → `docs/async_stereo_interpolation.md`
 - **RoverC ハード仕様** → `docs/roverc_datasheet.pdf` / `docs/roverc_pro_datasheet.pdf` / `docs/roverc_i2c_protocol.pdf`
 - **StickC Plus2 schematic** → `docs/stickc_plus2_schematic.pdf`

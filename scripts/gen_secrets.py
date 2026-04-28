@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
-"""Generate src/roverc_server/secrets.h from config.json.
+"""Generate secrets.h for every sketch under src/ from config.json.
+
+A "sketch" is any immediate subdirectory of src/ that contains a .ino file.
+The same secrets.h content is written into each sketch directory so that
+sketches share WiFi credentials and any common configuration values.
 
 Run from repo root:
-    python3 scripts/gen_secrets.py [--config config.json] [--out src/roverc_server/secrets.h]
+    python3 scripts/gen_secrets.py [--config config.json] [--src-dir src]
 """
 import argparse
 import json
@@ -14,17 +18,25 @@ def c_escape(s: str) -> str:
     return s.replace("\\", "\\\\").replace('"', '\\"')
 
 
+def find_sketch_dirs(src_dir: Path) -> list[Path]:
+    out: list[Path] = []
+    for child in sorted(src_dir.iterdir()):
+        if not child.is_dir():
+            continue
+        if any(p.suffix == ".ino" for p in child.iterdir()):
+            out.append(child)
+    return out
+
+
 def main() -> int:
     repo_root = Path(__file__).resolve().parent.parent
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default=str(repo_root / "config.json"))
-    parser.add_argument(
-        "--out", default=str(repo_root / "src" / "roverc_server" / "secrets.h")
-    )
+    parser.add_argument("--src-dir", default=str(repo_root / "src"))
     args = parser.parse_args()
 
     config_path = Path(args.config)
-    out_path = Path(args.out)
+    src_dir = Path(args.src_dir)
 
     with config_path.open("r", encoding="utf-8") as f:
         cfg = json.load(f)
@@ -36,6 +48,10 @@ def main() -> int:
     failsafe_ms = int(cfg["control"]["failsafe_ms"])
     max_motor = int(cfg["control"]["max_motor"])
 
+    camera_cfg = cfg.get("camera", {})
+    announce_port = int(camera_cfg.get("announce_port", 4211))
+    announce_interval_ms = int(camera_cfg.get("announce_interval_ms", 1000))
+
     if not 1 <= port <= 65535:
         print(f"server.port out of range: {port}", file=sys.stderr)
         return 1
@@ -44,6 +60,15 @@ def main() -> int:
         return 1
     if not 0 <= max_motor <= 127:
         print(f"control.max_motor out of range: {max_motor}", file=sys.stderr)
+        return 1
+    if not 1 <= announce_port <= 65535:
+        print(f"camera.announce_port out of range: {announce_port}", file=sys.stderr)
+        return 1
+    if not 50 <= announce_interval_ms <= 60000:
+        print(
+            f"camera.announce_interval_ms out of range: {announce_interval_ms}",
+            file=sys.stderr,
+        )
         return 1
 
     content = (
@@ -55,11 +80,19 @@ def main() -> int:
         f"#define CONTROL_RATE_HZ {rate_hz}\n"
         f"#define FAILSAFE_MS {failsafe_ms}\n"
         f"#define MAX_MOTOR {max_motor}\n"
+        f"#define CAMERA_ANNOUNCE_PORT {announce_port}\n"
+        f"#define CAMERA_ANNOUNCE_INTERVAL_MS {announce_interval_ms}\n"
     )
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(content, encoding="utf-8")
-    print(f"wrote {out_path} ({len(content)} bytes)")
+    sketch_dirs = find_sketch_dirs(src_dir)
+    if not sketch_dirs:
+        print(f"no sketches found under {src_dir}", file=sys.stderr)
+        return 1
+
+    for sketch in sketch_dirs:
+        out_path = sketch / "secrets.h"
+        out_path.write_text(content, encoding="utf-8")
+        print(f"wrote {out_path} ({len(content)} bytes)")
     return 0
 
 

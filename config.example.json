@@ -16,5 +16,9 @@
       "rear_left": 1.0,
       "rear_right": 1.0
     }
+  },
+  "camera": {
+    "announce_port": 4211,
+    "announce_interval_ms": 1000
   }
 }
