@@ -190,6 +190,13 @@ def main() -> int:
     ap.add_argument("--log-level", default="INFO")
     args = ap.parse_args()
 
+    if args.out.exists():
+        ap.error(
+            f"--out path already exists: {args.out}. Refusing to overwrite a "
+            "previous calibration result. Pick a new path, or pass the existing "
+            "file via --init-coefs and write to a fresh --out."
+        )
+
     logging.basicConfig(
         level=args.log_level.upper(),
         format="%(asctime)s %(levelname)s %(message)s",
