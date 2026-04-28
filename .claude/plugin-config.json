@@ -9,6 +9,10 @@
   },
   "remotes": {
     "origin": {
+      "repo": "Masashi-Lateolabrax/roverc",
+      "url": "https://github.com"
+    },
+    "gitea": {
       "repo": "perciformes/roverc",
       "url": "http://git.perciformes-family.vpn"
     }
