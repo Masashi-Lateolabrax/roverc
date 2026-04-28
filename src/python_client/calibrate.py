@@ -10,11 +10,12 @@ Usage (run from repo root):
     uv run python src/python_client/calibrate.py \\
         --host 192.168.1.123 --generations 10 --pop-size 5 --out coefs/v1.json
 
-Each trial drives the rover symmetrically (forward half then reverse half)
-through one of four fixed patterns (cardinal + diagonals, no commanded yaw),
-so net displacement per trial is near zero and the rover stays on the desk
-across repeated trials. Telemetry is turned on automatically via
-`cfg.tel = true`.
+Each trial drives one of four fixed patterns (cardinal + diagonals, no
+commanded yaw) through the cycle drive(+) → release → drive(-) → release.
+The two release windows isolate stop-residual yaw cleanly, and the
+symmetric leg pair keeps net displacement per trial near zero so the
+rover stays on the desk across repeated trials. Telemetry is turned on
+automatically via `cfg.tel = true`.
 """
 from __future__ import annotations
 
@@ -41,15 +42,23 @@ from coefs import (
 from roverc import RoverCClient
 from telemetry import TelemetryPacket, TelemetryQueue
 
-T_DRIVE = 1.0     # seconds commanded direction held (split into two halves)
-T_RELEASE = 1.5   # seconds after release where stop residual is measured
-T_SETTLE = 0.5    # seconds extra at zero before next trial
+T_DRIVE = 1.0     # seconds each driven leg (forward, then reverse)
+T_RELEASE = 1.0   # seconds release after each driven leg
 TRIAL_TICK_S = 0.04  # 25 Hz, matches telemetry rate
 
-# Fixed direction patterns cycled by trial index. Symmetric drive in
-# run_trial reverses the sign in the second half, so each pattern covers
-# itself + its negation (8 directions total). Diagonals are scaled by
-# 1/sqrt(2) so per-axis amplitude matches the cardinal cases.
+# A trial covers four phases back-to-back: drive(+), release, drive(-),
+# release. Each release window is where stop residual yaw is scored, and
+# the forward / reverse legs are isolated (no instantaneous reversal) so
+# the rover doesn't pitch from the abrupt sign flip.
+T_FWD_END = T_DRIVE
+T_REL1_END = T_FWD_END + T_RELEASE
+T_REV_END = T_REL1_END + T_DRIVE
+T_REL2_END = T_REV_END + T_RELEASE
+
+# Fixed direction patterns cycled by trial index. Each trial drives the
+# pattern then its negation, so the four patterns cover 8 directions
+# total. Diagonals are scaled by 1/sqrt(2) so per-axis amplitude matches
+# the cardinal cases.
 _D = 1.0 / math.sqrt(2.0)
 DIRECTION_PATTERNS: list[tuple[float, float]] = [
     (1.0, 0.0),    # forward / backward
@@ -75,7 +84,7 @@ def make_trial_order(rng: random.Random, n_trials: int) -> list[int]:
 def sample_direction(rng: random.Random, pattern_idx: int) -> tuple[float, float, float]:
     """Pick magnitude in [0.4, 0.7] so the polynomial sees a range of `s`
     values (otherwise low-speed coefficients are never excited) while
-    keeping per-trial coast distance bounded. Direction is selected by the
+    keeping per-leg coast distance bounded. Direction is selected by the
     caller via `pattern_idx`. No commanded wz: cost function is `|gz|`, so
     non-zero wz_cmd would require a model-based reference."""
     dx, dy = DIRECTION_PATTERNS[pattern_idx]
@@ -88,22 +97,22 @@ def run_trial(
     queue: TelemetryQueue,
     vx: float, vy: float, wz: float,
 ) -> list[tuple[float, TelemetryPacket]]:
-    """Drive (vx, vy, wz) for T_DRIVE/2, then (-vx, -vy, -wz) for the next
-    T_DRIVE/2, then release for T_RELEASE + T_SETTLE. The symmetric pair
-    keeps net displacement near zero so the rover stays on the desk across
-    repeated trials. Returns (relative_t_s, packet) pairs collected during
-    the trial. Drains the queue first so cross-trial telemetry doesn't
-    leak in."""
+    """Run one trial: drive (vx, vy, wz) for T_DRIVE, release for
+    T_RELEASE, drive (-vx, -vy, -wz) for T_DRIVE, release for T_RELEASE.
+    The two release windows give clean stop-residual measurements (no
+    sign flip mid-drive that would induce pitching). Net displacement
+    stays bounded because the legs are symmetric. Drains the queue first
+    so cross-trial telemetry doesn't leak in."""
     queue.drain()
     t_start = time.monotonic()
-    t_reverse = t_start + T_DRIVE / 2.0
-    t_release = t_start + T_DRIVE
-    t_end = t_release + T_RELEASE + T_SETTLE
+    t_end = t_start + T_REL2_END
     while time.monotonic() < t_end:
-        now = time.monotonic()
-        if now < t_reverse:
+        elapsed = time.monotonic() - t_start
+        if elapsed < T_FWD_END:
             client.send_motion(vx, vy, wz)
-        elif now < t_release:
+        elif elapsed < T_REL1_END:
+            client.send_motion(0.0, 0.0, 0.0)
+        elif elapsed < T_REV_END:
             client.send_motion(-vx, -vy, -wz)
         else:
             client.send_motion(0.0, 0.0, 0.0)
@@ -117,9 +126,10 @@ def trial_cost(
     alpha: float = 1.0,
     beta: float = 2.0,
 ) -> float:
-    """∫|gz| during drive + β·∫|gz| during release window.
-    `beta > alpha` puts more weight on release residual (the visible
-    artefact the user wants gone). Returns mean |gz| in deg/s, weighted."""
+    """α·mean|gz| over both drive legs + β·mean|gz| over both release
+    windows. `beta > alpha` puts more weight on the release residual
+    (the visible artefact the user wants gone). Returns weighted mean
+    |gz| in deg/s."""
     if not pkts:
         return 1e6
     drive_sum = 0.0
@@ -127,10 +137,16 @@ def trial_cost(
     n_drive = 0
     n_release = 0
     for t, p in pkts:
-        if t < T_DRIVE:
+        if t < T_FWD_END:
             drive_sum += abs(p.gz_dps)
             n_drive += 1
-        elif t < T_DRIVE + T_RELEASE:
+        elif t < T_REL1_END:
+            release_sum += abs(p.gz_dps)
+            n_release += 1
+        elif t < T_REV_END:
+            drive_sum += abs(p.gz_dps)
+            n_drive += 1
+        elif t < T_REL2_END:
             release_sum += abs(p.gz_dps)
             n_release += 1
     if n_drive == 0:
