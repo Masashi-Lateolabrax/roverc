@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Automated calibration of the RoverC polynomial motor model via CMA-ES.
 
-Drives the rover through random direction × release trials, scoring each
+Drives the rover through cycled direction × release trials, scoring each
 candidate polynomial set by integrated yaw residual during the driven and
 release windows. The best coefficients are saved to a JSON file at every
 generation; teleop.py loads that file at startup with `--coefs`.
@@ -10,15 +10,17 @@ Usage (run from repo root):
     uv run python src/python_client/calibrate.py \\
         --host 192.168.1.123 --generations 10 --pop-size 5 --out coefs/v1.json
 
-Place the rover on a flat surface with enough slack space in every direction
-that ~1.5s drives don't crash it; trials sample only forward/backward and
-strafe (no commanded yaw), so the rover stays roughly centred. Telemetry is
-turned on automatically via `cfg.tel = true`.
+Each trial drives the rover symmetrically (forward half then reverse half)
+through one of four fixed patterns (cardinal + diagonals, no commanded yaw),
+so net displacement per trial is near zero and the rover stays on the desk
+across repeated trials. Telemetry is turned on automatically via
+`cfg.tel = true`.
 """
 from __future__ import annotations
 
 import argparse
 import logging
+import math
 import random
 import sys
 import time
@@ -39,22 +41,46 @@ from coefs import (
 from roverc import RoverCClient
 from telemetry import TelemetryPacket, TelemetryQueue
 
-T_DRIVE = 1.5     # seconds commanded direction held
+T_DRIVE = 1.0     # seconds commanded direction held (split into two halves)
 T_RELEASE = 1.5   # seconds after release where stop residual is measured
 T_SETTLE = 0.5    # seconds extra at zero before next trial
 TRIAL_TICK_S = 0.04  # 25 Hz, matches telemetry rate
 
+# Fixed direction patterns cycled by trial index. Symmetric drive in
+# run_trial reverses the sign in the second half, so each pattern covers
+# itself + its negation (8 directions total). Diagonals are scaled by
+# 1/sqrt(2) so per-axis amplitude matches the cardinal cases.
+_D = 1.0 / math.sqrt(2.0)
+DIRECTION_PATTERNS: list[tuple[float, float]] = [
+    (1.0, 0.0),    # forward / backward
+    (0.0, 1.0),    # right / left strafe
+    (_D, _D),      # forward-right / backward-left diagonal
+    (_D, -_D),     # forward-left / backward-right diagonal
+]
 
-def sample_direction(rng: random.Random) -> tuple[float, float, float]:
-    """No commanded wz: cost function is `|gz|`, so non-zero wz_cmd would
-    require a model-based reference. We can extend later once straight-line
-    tracking is solved."""
-    r = rng.random()
-    sign = rng.choice([-1.0, +1.0])
-    mag = rng.uniform(0.4, 1.0)
-    if r < 0.7:
-        return (sign * mag, 0.0, 0.0)
-    return (0.0, sign * mag, 0.0)
+
+def make_trial_order(rng: random.Random, n_trials: int) -> list[int]:
+    """Return a length-n_trials list of pattern indices. Each block of
+    len(DIRECTION_PATTERNS) trials is a separate random shuffle, so every
+    pattern appears equally often within each lap while the order itself
+    is randomised."""
+    order: list[int] = []
+    while len(order) < n_trials:
+        block = list(range(len(DIRECTION_PATTERNS)))
+        rng.shuffle(block)
+        order.extend(block)
+    return order[:n_trials]
+
+
+def sample_direction(rng: random.Random, pattern_idx: int) -> tuple[float, float, float]:
+    """Pick magnitude in [0.4, 0.7] so the polynomial sees a range of `s`
+    values (otherwise low-speed coefficients are never excited) while
+    keeping per-trial coast distance bounded. Direction is selected by the
+    caller via `pattern_idx`. No commanded wz: cost function is `|gz|`, so
+    non-zero wz_cmd would require a model-based reference."""
+    dx, dy = DIRECTION_PATTERNS[pattern_idx]
+    mag = rng.uniform(0.4, 0.7)
+    return (mag * dx, mag * dy, 0.0)
 
 
 def run_trial(
@@ -62,17 +88,23 @@ def run_trial(
     queue: TelemetryQueue,
     vx: float, vy: float, wz: float,
 ) -> list[tuple[float, TelemetryPacket]]:
-    """Drive (vx, vy, wz) for T_DRIVE then release for T_RELEASE + T_SETTLE.
-    Returns (relative_t_s, packet) pairs collected during the trial. Drains
-    the queue first so cross-trial telemetry doesn't leak in."""
+    """Drive (vx, vy, wz) for T_DRIVE/2, then (-vx, -vy, -wz) for the next
+    T_DRIVE/2, then release for T_RELEASE + T_SETTLE. The symmetric pair
+    keeps net displacement near zero so the rover stays on the desk across
+    repeated trials. Returns (relative_t_s, packet) pairs collected during
+    the trial. Drains the queue first so cross-trial telemetry doesn't
+    leak in."""
     queue.drain()
     t_start = time.monotonic()
+    t_reverse = t_start + T_DRIVE / 2.0
     t_release = t_start + T_DRIVE
     t_end = t_release + T_RELEASE + T_SETTLE
     while time.monotonic() < t_end:
-        elapsed = time.monotonic() - t_start
-        if elapsed < T_DRIVE:
+        now = time.monotonic()
+        if now < t_reverse:
             client.send_motion(vx, vy, wz)
+        elif now < t_release:
+            client.send_motion(-vx, -vy, -wz)
         else:
             client.send_motion(0.0, 0.0, 0.0)
         time.sleep(TRIAL_TICK_S)
@@ -121,8 +153,9 @@ def evaluate_candidate(
     push_to_firmware(coefs, client.send_poly_chunk, client.send_config_dict)
     time.sleep(0.2)  # settle: let firmware finish applying chunks
     costs = []
+    trial_order = make_trial_order(rng, n_trials)
     for ti in range(n_trials):
-        vx, vy, wz = sample_direction(rng)
+        vx, vy, wz = sample_direction(rng, trial_order[ti])
         pkts = run_trial(client, queue, vx, vy, wz)
         c = trial_cost(pkts)
         costs.append(c)
@@ -146,8 +179,10 @@ def main() -> int:
     ap.add_argument("--pop-size", type=int, default=20)
     ap.add_argument("--sigma", type=float, default=0.05,
                     help="CMA-ES initial step. 0.05 keeps early candidates close to identity.")
-    ap.add_argument("--n-trials", type=int, default=10)
-    ap.add_argument("--pause-seconds", type=float, default=5.0,
+    ap.add_argument("--n-trials", type=int, default=8,
+                    help="Trials per candidate. Defaults to 8 = 4 direction "
+                         "patterns x 2 cycles.")
+    ap.add_argument("--pause-seconds", type=float, default=15.0,
                     help="Seconds to stop the rover between candidates so the "
                          "experimenter can recenter it within the test area. "
                          "0 disables.")
