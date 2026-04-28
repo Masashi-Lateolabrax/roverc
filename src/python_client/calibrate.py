@@ -192,7 +192,10 @@ def main() -> int:
                     help="JSON path where the running best coefficient set is saved.")
     ap.add_argument("--init-coefs", type=Path, default=None,
                     help="Seed CMA-ES from this JSON instead of identity defaults.")
-    ap.add_argument("--pop-size", type=int, default=20)
+    ap.add_argument("--pop-size", type=int, default=None,
+                    help="CMA-ES population size lambda. Defaults to Hansen's "
+                         "heuristic 4 + floor(3 * ln(n)) where n is the "
+                         "coefficient vector dimension.")
     ap.add_argument("--sigma", type=float, default=0.05,
                     help="CMA-ES initial step. 0.05 keeps early candidates close to identity.")
     ap.add_argument("--n-trials", type=int, default=8,
@@ -243,16 +246,17 @@ def main() -> int:
     queue.drain()
 
     x0 = coefs_to_vector(template)
+    pop_size = args.pop_size if args.pop_size is not None else 4 + int(3 * math.log(len(x0)))
     es = cma.CMAEvolutionStrategy(
         x0=x0,
         sigma0=args.sigma,
-        inopts={"popsize": args.pop_size, "verbose": -9},
+        inopts={"popsize": pop_size, "verbose": -9},
     )
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     save_json(template, args.out)
     log.info("seed coefficients saved to %s (pop=%d sigma=%.3f trials/cand=%d)",
-             args.out, args.pop_size, args.sigma, args.n_trials)
+             args.out, pop_size, args.sigma, args.n_trials)
 
     gen = 0
     candidates_done = 0
