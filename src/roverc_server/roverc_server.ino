@@ -48,17 +48,21 @@ static uint32_t g_next_tel_ms = 0;
 
 // Binary polynomial-coefficient packet format (sent as its own UDP datagram,
 // not embedded in the JSON cfg envelope):
-//   [0]        magic 0xC0
-//   [1]        wheel  (0..3 = FL FR RL RR)
-//   [2]        dir    (0=fwd, 1=bwd)
-//   [3]        phase  (0=KICK, 1=STEADY, 2=BRAKE)
-//   [4..67]    a[16]  little-endian float, row-major (j*4+k)  -- f-poly
-//   [68..131]  b[16]  little-endian float, row-major          -- g-poly
-// Total 132 bytes. Idempotent on (wheel,dir,phase); PC repeats each chunk to
-// absorb LWIP rx-queue drops (rx queue ~6-8 packets), and 24 chunks form the
-// full coefficient table.
+//   [0]      magic 0xC0
+//   [1]      wheel  (0..3 = FL FR RL RR)
+//   [2]      dir    (0=fwd, 1=bwd)
+//   [3]      reserved (=0)
+//   [4..7]   k_steady               (float LE) -- STEADY gain, p = k * s
+//   [8..31]  kick c[0..POLY_MAX_ORDER]    (POLY_NCOEFS floats LE, monomial in t)
+//   [32..55] brake c[0..POLY_MAX_ORDER]   (POLY_NCOEFS floats LE, monomial in t)
+// Total 56 bytes. Idempotent on (wheel, dir); PC repeats each chunk to absorb
+// LWIP rx-queue drops (rx queue ~6-8 packets), and 8 chunks (4 wheels × 2 dirs)
+// form the full coefficient table.
+static constexpr uint8_t  POLY_MAX_ORDER = 5;
+static constexpr size_t   POLY_NCOEFS = POLY_MAX_ORDER + 1;
 static constexpr uint8_t  POLY_CHUNK_MAGIC = 0xC0;
-static constexpr size_t   POLY_CHUNK_BYTES = 132;
+static constexpr size_t   POLY_CHUNK_BYTES = 4 + 4 + POLY_NCOEFS * 4 + POLY_NCOEFS * 4;
+static_assert(POLY_CHUNK_BYTES == 56, "wire format size drift");
 
 // Per-wheel sign flips. Adjust during bring-up if a wheel spins the wrong way.
 static constexpr int8_t SIGN_M[4] = {+1, +1, +1, +1};  // FL, FR, RL, RR
@@ -94,30 +98,29 @@ struct MotorState {
   int8_t s_pre_sign = 0;     // sign of s_pre (selects brake fwd vs bwd cell)
 };
 
-// (s, t) bivariate polynomial up to total-order (3, 3): degree ≤ 3 in s AND
-// in t separately, so 4*4 = 16 monomials per polynomial, two polynomials per
-// (wheel, dir, phase) cell. Coefficients arrive from the PC; defaults are
-// scalar-identity so behaviour matches P1 until calibrate.py pushes anything.
-//   p_norm(s, t) = s · f(s, t) + g(s, t)
-//   f(s, t) = sum_{j,k} a[j][k] * s^j * t^k
-//   g(s, t) = sum_{j,k} b[j][k] * s^j * t^k
-// `s` is the per-wheel mecanum-mixed value normalized to [-1, 1]; `t` is
-// phase-relative time in seconds; the I2C motor command is then
-// clamp(p_norm * max_motor) (with the SIGN_M[i] flip).
-struct Poly {
-  float a[4][4];
-  float b[4][4];
+// Univariate-in-t polynomial motor model. Per (wheel, dir):
+//   p_kick(t)  = s · f_k(t),     f_k(0) = 0,        f_k(T_k) = k_steady
+//   p_steady   = k_steady · s
+//   p_brake(t) = s_pre · f_b(t), f_b(0) = k_steady, f_b(T_b) = 0
+// `s` is the per-wheel mecanum-mixed normalized command, `s_pre` is the
+// snapshot at STEADY → BRAKE entry, `t` is phase-relative time in seconds.
+// Boundary conditions enforce continuity at phase transitions and are
+// applied PC-side before the chunks land here; firmware just evaluates the
+// monomial polynomial. `f_k`, `f_b` non-negativity (so direction is preserved)
+// is also enforced PC-side via Bernstein control points + x² mapping.
+struct Poly1D {
+  float c[POLY_NCOEFS];
 };
 
-struct PhaseCoefs {
-  Poly fwd;
-  Poly bwd;
+struct PerDirCoefs {
+  float k_steady;
+  Poly1D kick;
+  Poly1D brake;
 };
 
 struct WheelCoefs {
-  PhaseCoefs kick;
-  PhaseCoefs steady;
-  PhaseCoefs brake;
+  PerDirCoefs fwd;
+  PerDirCoefs bwd;
 };
 
 struct CameraState {
@@ -175,100 +178,74 @@ static float clampf(float v, float lo, float hi) {
   return v;
 }
 
-// Evaluate Σ c[j][k] * s^j * t^k over j,k ∈ {0..3}.
-static float eval_poly_part(const float c[4][4], float s, float t) {
+// Evaluate Σ c[k] * t^k over k ∈ {0..POLY_MAX_ORDER}. Slots beyond the
+// calibrated polynomial degree are zero-padded by the PC, so this is just
+// a fixed-size Horner-like loop.
+static float eval_poly1d(const Poly1D &p, float t) {
   float result = 0.0f;
-  float s_pow = 1.0f;
-  for (int j = 0; j < 4; ++j) {
-    float t_pow = 1.0f;
-    for (int k = 0; k < 4; ++k) {
-      result += c[j][k] * s_pow * t_pow;
-      t_pow *= t;
-    }
-    s_pow *= s;
+  float t_pow = 1.0f;
+  for (size_t k = 0; k < POLY_NCOEFS; ++k) {
+    result += p.c[k] * t_pow;
+    t_pow *= t;
   }
   return result;
 }
 
-// p_norm(s, t) = s * f(s, t) + g(s, t).
-static float eval_poly(const Poly &p, float s, float t) {
-  float f = eval_poly_part(p.a, s, t);
-  float g = eval_poly_part(p.b, s, t);
-  return s * f + g;
-}
-
-// Reset every cell to scalar identity that reproduces P1 default behaviour:
-// KICK / STEADY are p_norm = s (i.e. a[0][0] = 1, all else 0), BRAKE is fully
-// zero (no active brake until PC pushes coefficients).
+// Default at boot: k_steady = 1 (p = s during STEADY), kick polynomial linear
+// 0 → 1 over T_k (matches the f_k(0)=0, f_k(T_k)=k boundary conditions),
+// brake polynomial all-zero (no active brake until calibrate.py pushes
+// constraint-respecting coefficients). T_k_sec = 0 collapses kick to zero.
 static void init_poly_defaults() {
-  memset(g_poly, 0, sizeof(g_poly));
+  float Tk_sec = static_cast<float>(g_cfg.kick_dur_ms) / 1000.0f;
   for (int i = 0; i < 4; ++i) {
-    g_poly[i].kick.fwd.a[0][0]   = 1.0f;
-    g_poly[i].kick.bwd.a[0][0]   = 1.0f;
-    g_poly[i].steady.fwd.a[0][0] = 1.0f;
-    g_poly[i].steady.bwd.a[0][0] = 1.0f;
-    // BRAKE: zero by default.
+    PerDirCoefs *dirs[2] = {&g_poly[i].fwd, &g_poly[i].bwd};
+    for (int d = 0; d < 2; ++d) {
+      dirs[d]->k_steady = 1.0f;
+      memset(&dirs[d]->kick, 0, sizeof(Poly1D));
+      memset(&dirs[d]->brake, 0, sizeof(Poly1D));
+      if (Tk_sec > 0.0f) {
+        dirs[d]->kick.c[1] = 1.0f / Tk_sec;  // f_k(t) = t / T_k
+      }
+    }
   }
 }
 
-// Legacy scalar trim/kick from JSON cfg packets land here -- they overwrite
-// only the constant term a[0][0] of the corresponding STEADY/KICK cell, so
-// the polynomial framework and the existing teleop sliders coexist.
-static void poly_set_const_a00(int wheel, int phase_idx, int dir_idx, float v) {
-  if (wheel < 0 || wheel >= 4) return;
-  PhaseCoefs *pc = nullptr;
-  switch (phase_idx) {
-    case 0: pc = &g_poly[wheel].kick; break;
-    case 1: pc = &g_poly[wheel].steady; break;
-    case 2: pc = &g_poly[wheel].brake; break;
-    default: return;
-  }
-  Poly *p = (dir_idx == 0) ? &pc->fwd : &pc->bwd;
-  p->a[0][0] = v;
-}
-
-static void parse_array4(JsonArrayConst arr, float def, float lo, float hi,
-                         int phase_idx, int dir_idx) {
-  if (arr.isNull() || arr.size() < 4) return;
-  for (int i = 0; i < 4; ++i) {
-    float v = arr[i] | def;
-    poly_set_const_a00(i, phase_idx, dir_idx, clampf(v, lo, hi));
-  }
-}
-
-// Apply a single binary 0xC0 polynomial chunk. Rejects (and logs) any chunk
-// whose 32 floats include a non-finite value rather than letting NaN/Inf get
-// multiplied into the I2C motor stream.
+// Apply a single binary 0xC0 polynomial chunk for one (wheel, dir). Rejects
+// (and logs) any chunk whose floats include a non-finite value or a negative
+// k_steady -- direction would flip on negative gain.
 static void apply_poly_chunk(const uint8_t *buf, int n) {
   if (n < static_cast<int>(POLY_CHUNK_BYTES)) return;
   uint8_t wheel = buf[1];
   uint8_t dir   = buf[2];
-  uint8_t phase = buf[3];
-  if (wheel >= 4 || dir >= 2 || phase >= 3) {
-    Serial.printf("poly chunk reject: bad index w=%u d=%u p=%u\n", wheel, dir, phase);
+  if (wheel >= 4 || dir >= 2) {
+    Serial.printf("poly chunk reject: bad index w=%u d=%u\n", wheel, dir);
     return;
   }
 
-  float a[16], b[16];
-  memcpy(a, buf + 4,  64);
-  memcpy(b, buf + 68, 64);
-  for (int i = 0; i < 16; ++i) {
-    if (!isfinite(a[i]) || !isfinite(b[i])) {
-      Serial.printf("poly chunk reject: non-finite at w=%u d=%u p=%u i=%d\n",
-                    wheel, dir, phase, i);
+  float k_steady;
+  float kick_c[POLY_NCOEFS];
+  float brake_c[POLY_NCOEFS];
+  memcpy(&k_steady, buf + 4, 4);
+  memcpy(kick_c,    buf + 8, POLY_NCOEFS * 4);
+  memcpy(brake_c,   buf + 8 + POLY_NCOEFS * 4, POLY_NCOEFS * 4);
+
+  if (!isfinite(k_steady) || k_steady < 0.0f) {
+    Serial.printf("poly chunk reject: bad k_steady %.3f at w=%u d=%u\n",
+                  k_steady, wheel, dir);
+    return;
+  }
+  for (size_t i = 0; i < POLY_NCOEFS; ++i) {
+    if (!isfinite(kick_c[i]) || !isfinite(brake_c[i])) {
+      Serial.printf("poly chunk reject: non-finite at w=%u d=%u i=%u\n",
+                    wheel, dir, static_cast<unsigned>(i));
       return;
     }
   }
 
-  PhaseCoefs *pc = nullptr;
-  switch (phase) {
-    case 0: pc = &g_poly[wheel].kick; break;
-    case 1: pc = &g_poly[wheel].steady; break;
-    case 2: pc = &g_poly[wheel].brake; break;
-  }
-  Poly *target = (dir == 0) ? &pc->fwd : &pc->bwd;
-  memcpy(target->a, a, 64);
-  memcpy(target->b, b, 64);
+  PerDirCoefs *target = (dir == 0) ? &g_poly[wheel].fwd : &g_poly[wheel].bwd;
+  target->k_steady = k_steady;
+  memcpy(target->kick.c,  kick_c,  POLY_NCOEFS * 4);
+  memcpy(target->brake.c, brake_c, POLY_NCOEFS * 4);
   g_poly_chunks_received++;
 }
 
@@ -331,24 +308,23 @@ static void compute_motors(float vx, float vy, float wz, uint32_t now, int8_t ou
     float t_sec = static_cast<float>(tau) / 1000.0f;
     switch (st.phase) {
       case PH_KICK: {
-        const Poly &poly = (sign > 0) ? g_poly[i].kick.fwd : g_poly[i].kick.bwd;
-        float p_norm = eval_poly(poly, s, t_sec);
-        out_i = clamp_int8(static_cast<int>(p_norm * max_m));
+        const PerDirCoefs &pd = (sign > 0) ? g_poly[i].fwd : g_poly[i].bwd;
+        float fk = eval_poly1d(pd.kick, t_sec);
+        out_i = clamp_int8(static_cast<int>(s * fk * max_m));
         break;
       }
       case PH_STEADY: {
-        const Poly &poly = (sign > 0) ? g_poly[i].steady.fwd : g_poly[i].steady.bwd;
-        float p_norm = eval_poly(poly, s, t_sec);
-        out_i = clamp_int8(static_cast<int>(p_norm * max_m));
+        const PerDirCoefs &pd = (sign > 0) ? g_poly[i].fwd : g_poly[i].bwd;
+        out_i = clamp_int8(static_cast<int>(s * pd.k_steady * max_m));
         break;
       }
       case PH_BRAKE: {
-        const Poly &poly = (st.s_pre_sign > 0) ? g_poly[i].brake.fwd : g_poly[i].brake.bwd;
-        // BRAKE polynomial takes the snapshot s_pre as its s-input -- the
-        // current `s` is zero so passing it would collapse f(s,t)·s to zero
-        // and only g(s,t) would survive.
-        float p_norm = eval_poly(poly, st.s_pre, t_sec);
-        out_i = clamp_int8(static_cast<int>(p_norm * max_m));
+        const PerDirCoefs &pd = (st.s_pre_sign > 0) ? g_poly[i].fwd : g_poly[i].bwd;
+        // BRAKE drives `p = s_pre · f_b(t)`: the current commanded `s` is 0
+        // (otherwise we wouldn't have entered BRAKE) so we use the snapshot
+        // taken at STEADY → BRAKE.
+        float fb = eval_poly1d(pd.brake, t_sec);
+        out_i = clamp_int8(static_cast<int>(st.s_pre * fb * max_m));
         break;
       }
       case PH_IDLE:
@@ -564,14 +540,25 @@ static void apply_config(JsonObjectConst cfg) {
   if (cfg["tel"].is<bool>()) {
     g_cfg.tel_en = cfg["tel"];
   }
-  // Legacy scalar trim/kick paths land in the constant term of the relevant
-  // polynomial cell. `bf`/`bb` (BRAKE scalar) are intentionally not exposed
-  // here -- BRAKE coefficients are pushed via the binary 0xC0 chunk path so
-  // calibrate.py owns them entirely.
-  parse_array4(cfg["tf"], 1.0f, 0.0f, 4.0f, /*phase=*/1, /*dir=*/0);
-  parse_array4(cfg["tb"], 1.0f, 0.0f, 4.0f, 1, 1);
-  parse_array4(cfg["kf"], 1.0f, 0.0f, 4.0f, /*phase=*/0, /*dir=*/0);
-  parse_array4(cfg["kb"], 1.0f, 0.0f, 4.0f, 0, 1);
+  // Legacy scalar trim arrays `tf` / `tb` are redirected to per-(wheel, dir)
+  // STEADY gain so existing teleop sliders still tune drive balance. The
+  // `kf` / `kb` arrays are obsolete -- KICK is now the polynomial f_k(t)
+  // pushed via 0xC0 chunks, no scalar-equivalent. Silently ignored if
+  // present in older clients.
+  if (cfg["tf"].is<JsonArrayConst>()) {
+    JsonArrayConst arr = cfg["tf"];
+    for (int i = 0; i < 4 && i < (int)arr.size(); ++i) {
+      float v = clampf(arr[i] | 1.0f, 0.0f, 4.0f);
+      g_poly[i].fwd.k_steady = v;
+    }
+  }
+  if (cfg["tb"].is<JsonArrayConst>()) {
+    JsonArrayConst arr = cfg["tb"];
+    for (int i = 0; i < 4 && i < (int)arr.size(); ++i) {
+      float v = clampf(arr[i] | 1.0f, 0.0f, 4.0f);
+      g_poly[i].bwd.k_steady = v;
+    }
+  }
   g_configs_received++;
 }
 

@@ -116,22 +116,37 @@ dynamics の非定常性を避ける、卒研の主旨「再現可能なデー�
 
 ## モータ補正モデル
 
-各輪は 4 相機械 `IDLE → KICK → STEADY → BRAKE → IDLE` を回り、各相の中で
+各輪は 4 相機械 `IDLE → KICK → STEADY → BRAKE → IDLE` を回り、相ごとに：
 
 ```
-p_norm(s, t) = s · f(s, t) + g(s, t)
-out = clamp(p_norm · max_motor)        // I2C 送信値
+KICK    : p = s · f_k(t)         f_k(0)   = 0,        f_k(T_k) = k
+STEADY  : p = k · s
+BRAKE   : p = s_pre · f_b(t)     f_b(0)   = k,        f_b(T_b) = 0
+out     = clamp(p · max_motor)   // I2C 送信値
 ```
 
-を計算する。`s` は per-wheel メカナム混合値の正規化値（`[-1, 1]`）、`t` は
-相相対時刻（秒）。`f` と `g` は 2 変数多項式（次数 ≤ 3 in s and t）で、
-1 セルあたり `4×4 + 4×4 = 32` 自由度。セル数は `4 wheels × 2 dirs × 3 phases = 24`、
-全体で **768 自由度**。
+`s` は per-wheel メカナム混合値の正規化値（`[-1, 1]`）、`s_pre` は
+STEADY → BRAKE 遷移時のスナップショット、`t` は相相対時刻（秒）。
+`f_k`、`f_b` は次数 N（default 3、`--poly-order` で 1〜5 可変）の単変数
+多項式で、境界条件は phase 遷移の連続性と BRAKE 終了時の出力ゼロを表す。
+`k` は per (wheel, dir) の STEADY 利得（モータ強度差を吸収）。
 
-CMA-ES が JSON で永続化される 768 次元ベクトルを最適化する。
-`coefs/identity.json` がスカラ恒等のベースライン
-（KICK/STEADY: `a[0][0]=1`、BRAKE: 全 0）。
+per (wheel, dir) の **自由パラメータ**（CMA-ES 最適化対象）：
+`1 (k) + (N−1) (f_k Bernstein 内部点) + (N−1) (f_b 内部点) = 2N−1`。
+N=3 で **5 / cell × 8 cells = 40 次元**。CMA-ES の Hansen λ デフォルトは
+`4 + ⌊3·ln(40)⌋ = 15`。
+
+**非負性の保証**：`k ≥ 0`、`f_k ≥ 0`、`f_b ≥ 0`（負だと相内でモータ方向が
+反転する）は構造的に保証されている：
+
+- CMA-ES 空間の 40 次元ベクトル `x ∈ R^40` を `b = x²` で写像（常に `≥ 0`）
+- `f_k` と `f_b` は Bernstein 制御点で表現し、内部点（`b₁..b_{N−1}`）と
+  端点（境界条件で固定）が全て非負なら凸結合として `f ≥ 0` が成立
+
+`coefs/identity.json` は線形ベースライン：`k = 1`、`f_k(t) = t/T_k`、
+`f_b(t) = 1 − t/T_b`。すべての境界条件と非負性を満たす。
 
 ```sh
 uv run python scripts/make_identity_coefs.py coefs/identity.json
+uv run python scripts/make_identity_coefs.py coefs/identity_n4.json --poly-order 4
 ```

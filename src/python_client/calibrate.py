@@ -31,6 +31,8 @@ import cma  # type: ignore[import-not-found]
 import numpy as np
 
 from coefs import (
+    DEFAULT_POLY_ORDER,
+    POLY_MAX_ORDER,
     CoefSet,
     coefs_to_vector,
     load_json,
@@ -189,6 +191,11 @@ def main() -> int:
                     help="JSON path where the running best coefficient set is saved.")
     ap.add_argument("--init-coefs", type=Path, default=None,
                     help="Seed CMA-ES from this JSON instead of identity defaults.")
+    ap.add_argument("--poly-order", type=int, default=DEFAULT_POLY_ORDER,
+                    help=f"Polynomial degree for f_k(t) and f_b(t). Default "
+                         f"{DEFAULT_POLY_ORDER}, max {POLY_MAX_ORDER}. Ignored "
+                         "if --init-coefs is provided (the JSON's poly_order "
+                         "wins to keep CMA-ES dimensions consistent).")
     ap.add_argument("--pop-size", type=int, default=None,
                     help="CMA-ES population size lambda. Defaults to Hansen's "
                          "heuristic 4 + floor(3 * ln(n)) where n is the "
@@ -212,6 +219,8 @@ def main() -> int:
             "previous calibration result. Pick a new path, or pass the existing "
             "file via --init-coefs and write to a fresh --out."
         )
+    if not (1 <= args.poly_order <= POLY_MAX_ORDER):
+        ap.error(f"--poly-order must be in [1, {POLY_MAX_ORDER}]")
 
     logging.basicConfig(
         level=args.log_level.upper(),
@@ -221,7 +230,11 @@ def main() -> int:
 
     rng = random.Random(args.seed)
 
-    template = load_json(args.init_coefs) if args.init_coefs else make_identity()
+    template = (
+        load_json(args.init_coefs)
+        if args.init_coefs
+        else make_identity(poly_order=args.poly_order)
+    )
 
     queue = TelemetryQueue(maxlen=20000)
     client = RoverCClient(args.host, args.port, on_telemetry=queue.on_packet)
