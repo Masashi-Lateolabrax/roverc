@@ -18,6 +18,23 @@ static constexpr uint32_t I2C_HZ = 100000;
 static constexpr uint8_t ROVERC_ADDR = 0x38;
 static constexpr uint8_t REG_MOTOR = 0x00;
 
+// Cameras share the RoverC HAT I2C bus as I2C slaves at fixed addresses.
+// The slaves serve an 8-byte status frame on master read:
+//   [0..3] IPv4 octets  [4..5] http_port (LE)  [6] camera_ok  [7] wifi_ok
+static constexpr uint8_t CAM_ADDR_LEFT = 0x40;
+static constexpr uint8_t CAM_ADDR_RIGHT = 0x41;
+static constexpr size_t CAM_FRAME_SIZE = 8;
+static constexpr uint32_t CAM_PROBE_INTERVAL_MS = 1000;
+
+// MJPEG send-token broadcast. Alternate a 1-byte write to the two camera
+// slaves at CAM_TOKEN_PERIOD_MS so each camera ends up with ~12 Hz tokens
+// offset by half-period, preventing simultaneous frame transmits that hog
+// 2.4 GHz airtime when both produce a high-entropy JPEG at once.
+static constexpr uint32_t CAM_TOKEN_PERIOD_MS = 42;
+static constexpr uint8_t  CAM_TOKEN_BYTE = 0x01;
+static uint32_t g_next_token_ms = 0;
+static uint8_t  g_token_target = 0;  // 0=left, 1=right
+
 // Per-wheel sign flips. Adjust during bring-up if a wheel spins the wrong way.
 static constexpr int8_t SIGN_M[4] = {+1, +1, +1, +1};  // FL, FR, RL, RR
 
@@ -45,6 +62,27 @@ struct MotorState {
   bool in_kick = false;
 };
 
+struct CameraState {
+  uint8_t addr;
+  bool present = false;        // sticky: cleared only after MARK_NOT_PRESENT_AFTER probe failures in a row
+  uint32_t last_seen_ms = 0;
+  uint8_t ip[4] = {0, 0, 0, 0};
+  uint16_t http_port = 0;
+  bool camera_ok = false;
+  bool wifi_ok = false;
+  uint8_t fail_streak = 0;
+};
+
+// A single failed Wire.requestFrom can leave the I2C bus master state machine
+// hung (SDA/SCL stuck low or driver internal flag stuck), and Arduino-ESP32
+// has no automatic recovery -- so we must (1) absorb transient blips with a
+// fail streak before clearing `present`, and (2) reset the master entirely
+// when failures pile up. Without this, /control writes during Apply can wedge
+// the camera probe path for ~30s+.
+static constexpr uint8_t MARK_NOT_PRESENT_AFTER = 3;
+static constexpr uint8_t RECOVER_BUS_AFTER = 5;
+static uint8_t g_probe_fails_since_last_ok = 0;
+
 static Motion g_cmd;
 static ServerConfig g_cfg;
 static MotorState g_motor_state[4];
@@ -52,7 +90,12 @@ static uint32_t g_last_packet_ms = 0;
 static uint32_t g_packets_received = 0;
 static uint32_t g_configs_received = 0;
 static IPAddress g_last_sender;
+static uint16_t g_last_sender_port = 0;
 static int8_t g_motors[4] = {0, 0, 0, 0};
+
+static CameraState g_cam_left = {CAM_ADDR_LEFT};
+static CameraState g_cam_right = {CAM_ADDR_RIGHT};
+static uint32_t g_next_cam_tick_ms = 0;
 
 static const uint32_t CONTROL_PERIOD_MS = 1000UL / CONTROL_RATE_HZ;
 static uint32_t g_next_tick_ms = 0;
@@ -113,6 +156,100 @@ static void compute_motors(float vx, float vy, float wz, uint32_t now, int8_t ou
     }
     out[i] = clamp_int8(static_cast<int>(m[i] * scale * tr)) * SIGN_M[i];
   }
+}
+
+// Wire.end()+begin() alone does NOT recover a physically stuck I2C bus
+// (SDA/SCL held low by a wedged slave). Drive SCL manually for up to 16
+// pulses to clock out whatever bit the slave is holding, issue a manual
+// STOP, then reinitialise the master.
+static void recover_i2c_bus() {
+  Wire.end();
+  pinMode(PIN_SCL, OUTPUT_OPEN_DRAIN);
+  pinMode(PIN_SDA, INPUT_PULLUP);
+  digitalWrite(PIN_SCL, HIGH);
+  for (int i = 0; i < 16 && digitalRead(PIN_SDA) == LOW; ++i) {
+    digitalWrite(PIN_SCL, LOW);
+    delayMicroseconds(5);
+    digitalWrite(PIN_SCL, HIGH);
+    delayMicroseconds(5);
+  }
+  // Manual STOP: SDA goes LOW->HIGH while SCL is HIGH.
+  pinMode(PIN_SDA, OUTPUT_OPEN_DRAIN);
+  digitalWrite(PIN_SDA, LOW);
+  delayMicroseconds(5);
+  digitalWrite(PIN_SCL, HIGH);
+  delayMicroseconds(5);
+  digitalWrite(PIN_SDA, HIGH);
+  delayMicroseconds(5);
+  Wire.begin(PIN_SDA, PIN_SCL, I2C_HZ);
+  Serial.println("I2C bus reset (with clock pulses)");
+}
+
+static void probe_camera(CameraState &c) {
+  uint8_t got = Wire.requestFrom((int)c.addr, (int)CAM_FRAME_SIZE);
+  if (got != CAM_FRAME_SIZE) {
+    while (Wire.available()) Wire.read();   // drain partial
+    // Only count toward bus-recovery when the slave was at least *transiently*
+    // active recently. A camera that has been missing for many probes already
+    // is "established absent" -- continuing to count it would trigger endless
+    // bus recoveries that disrupt the cameras that ARE present.
+    bool was_active = c.present || c.fail_streak < MARK_NOT_PRESENT_AFTER;
+    if (c.fail_streak < 0xFF) c.fail_streak++;
+    if (c.fail_streak >= MARK_NOT_PRESENT_AFTER) {
+      c.present = false;
+    }
+    if (was_active) g_probe_fails_since_last_ok++;
+    return;
+  }
+  uint8_t buf[CAM_FRAME_SIZE] = {0};
+  for (size_t i = 0; i < CAM_FRAME_SIZE; ++i) buf[i] = Wire.read();
+  c.fail_streak = 0;
+  c.present = true;
+  c.last_seen_ms = millis();
+  c.ip[0] = buf[0];
+  c.ip[1] = buf[1];
+  c.ip[2] = buf[2];
+  c.ip[3] = buf[3];
+  c.http_port = (uint16_t)buf[4] | ((uint16_t)buf[5] << 8);
+  c.camera_ok = buf[6] != 0;
+  c.wifi_ok = buf[7] != 0;
+  g_probe_fails_since_last_ok = 0;
+}
+
+static void emit_camera(JsonObject &cam, const char *role, const CameraState &c) {
+  if (!c.present || !c.wifi_ok) {
+    cam[role] = nullptr;
+    return;
+  }
+  JsonObject o = cam[role].to<JsonObject>();
+  char ip_buf[16];
+  snprintf(ip_buf, sizeof(ip_buf), "%u.%u.%u.%u",
+           c.ip[0], c.ip[1], c.ip[2], c.ip[3]);
+  o["ip"] = ip_buf;
+  o["port"] = c.http_port;
+  o["ok"] = c.camera_ok;
+}
+
+static void push_camera_state() {
+  if (g_last_sender == IPAddress(0, 0, 0, 0) || g_last_sender_port == 0) return;
+  JsonDocument doc;
+  JsonObject cam = doc["cam"].to<JsonObject>();
+  emit_camera(cam, "left", g_cam_left);
+  emit_camera(cam, "right", g_cam_right);
+
+  char buf[256];
+  size_t n = serializeJson(doc, buf, sizeof(buf));
+  if (n == 0) return;
+  udp.beginPacket(g_last_sender, g_last_sender_port);
+  udp.write((const uint8_t *)buf, n);
+  udp.endPacket();
+}
+
+static void send_camera_token(uint8_t addr) {
+  Wire.beginTransmission((int)addr);
+  Wire.write(CAM_TOKEN_BYTE);
+  // NACK from a missing camera is silently ignored; tokens are best-effort.
+  Wire.endTransmission();
 }
 
 static void send_motors_i2c(const int8_t m[4]) {
@@ -203,6 +340,7 @@ static void poll_udp() {
   g_cmd.t = doc["t"] | 0.0;
   g_last_packet_ms = millis();
   g_last_sender = udp.remoteIP();
+  g_last_sender_port = udp.remotePort();
   g_packets_received++;
 }
 
@@ -281,6 +419,27 @@ void loop() {
     float wz = failsafe ? 0.0f : g_cmd.wz;
     compute_motors(vx, vy, wz, now, g_motors);
     send_motors_i2c(g_motors);
+  }
+
+  if (static_cast<int32_t>(now - g_next_cam_tick_ms) >= 0) {
+    g_next_cam_tick_ms = now + CAM_PROBE_INTERVAL_MS;
+    if (g_probe_fails_since_last_ok >= RECOVER_BUS_AFTER) {
+      recover_i2c_bus();
+      g_probe_fails_since_last_ok = 0;
+    }
+    probe_camera(g_cam_left);
+    probe_camera(g_cam_right);
+    push_camera_state();
+  }
+
+  if (static_cast<int32_t>(now - g_next_token_ms) >= 0) {
+    g_next_token_ms = now + CAM_TOKEN_PERIOD_MS;
+    if (static_cast<int32_t>(now - g_next_token_ms) > 200) {
+      g_next_token_ms = now + CAM_TOKEN_PERIOD_MS;  // catch up after a stall
+    }
+    uint8_t addr = (g_token_target == 0) ? CAM_ADDR_LEFT : CAM_ADDR_RIGHT;
+    send_camera_token(addr);
+    g_token_target ^= 1;
   }
 
   update_lcd();
