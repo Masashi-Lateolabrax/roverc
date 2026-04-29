@@ -31,7 +31,10 @@ from camera import (
 from coefs import load_json as load_coefs_json
 from coefs import push_to_firmware as push_coefs
 from roverc import RoverCClient
+from telemetry import TelemetryPacket, parse as parse_telemetry
 from widgets import Button, ChoiceRow, Slider
+
+import threading
 
 KEY_VX = 1.0
 KEY_VY = 1.0
@@ -50,6 +53,82 @@ SETTINGS_SIZE = (820, 600)
 CAMERA_VIEW_SIZE = (320, 240)
 CAMERA_SIZE = (CAMERA_VIEW_SIZE[0] * 2 + 48, CAMERA_VIEW_SIZE[1] + 96)
 CAMERA_ROLES = ("left", "right")
+
+G_TO_MPS2 = 9.80665
+# Maximum estimated speed used to scale the est-velocity vector to half the HUD.
+EST_VEL_FULL_MPS = 0.5
+# Body-axis mapping from MPU6886 axes. Flip signs after empirical check on the
+# rover (push forward, observe whether vx_est goes positive). 0 = IMU x, 1 = y,
+# 2 = z. Forward positive = +x, left positive = +y.
+IMU_FWD_AXIS = 0
+IMU_FWD_SIGN = +1.0
+IMU_LEFT_AXIS = 1
+IMU_LEFT_SIGN = +1.0
+
+
+class VelocityEstimator:
+    """Body-frame velocity estimator from MPU6886 accel telemetry.
+
+    Strategy:
+      - During idle (no key pressed) the gravity vector in body frame is
+        learned via slow EMA, and the integrated velocity is held at zero.
+      - During driven motion the gravity baseline is held, accel is corrected
+        by `a_corr = (a_raw - g_baseline) * G_TO_MPS2`, and v is integrated
+        with the trapezoidal rule using StickC fw_t_ms as the timebase.
+      - Velocity resets to zero on every idle re-entry. This bounds drift to
+        the duration of a single press.
+    """
+
+    GRAVITY_EMA = 0.02
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._g = (0.0, 0.0, 0.0)
+        self._g_init = False
+        self._last_t_ms: int | None = None
+        self._vx = 0.0
+        self._vy = 0.0
+        self._idle = True
+
+    def set_idle(self, idle: bool) -> None:
+        with self._lock:
+            if idle and not self._idle:
+                self._vx = 0.0
+                self._vy = 0.0
+            self._idle = idle
+
+    def on_packet(self, pkt: TelemetryPacket) -> None:
+        a = (pkt.ax_g, pkt.ay_g, pkt.az_g)
+        with self._lock:
+            if not self._g_init:
+                self._g = a
+                self._g_init = True
+            elif self._idle:
+                e = self.GRAVITY_EMA
+                self._g = (
+                    (1 - e) * self._g[0] + e * a[0],
+                    (1 - e) * self._g[1] + e * a[1],
+                    (1 - e) * self._g[2] + e * a[2],
+                )
+
+            t_ms = pkt.fw_t_ms
+            if self._last_t_ms is None:
+                self._last_t_ms = t_ms
+                return
+            dt_ms = (t_ms - self._last_t_ms) & 0xFFFFFFFF
+            self._last_t_ms = t_ms
+            if dt_ms == 0 or dt_ms > 1000:
+                return
+            dt = dt_ms / 1000.0
+            if not self._idle:
+                a_fwd = (a[IMU_FWD_AXIS] - self._g[IMU_FWD_AXIS]) * IMU_FWD_SIGN * G_TO_MPS2
+                a_left = (a[IMU_LEFT_AXIS] - self._g[IMU_LEFT_AXIS]) * IMU_LEFT_SIGN * G_TO_MPS2
+                self._vx += a_fwd * dt
+                self._vy += a_left * dt
+
+    def snapshot(self) -> tuple[float, float, bool]:
+        with self._lock:
+            return (self._vx, self._vy, self._g_init)
 
 
 class WindowPanel:
@@ -177,7 +256,9 @@ def build_settings_layout(initial_max: int, initial_trim: list[float]) -> tuple[
 
 def draw_velocity_hud(
     surface: pygame.Surface, origin: tuple[int, int], size: tuple[int, int],
-    vx: float, vy: float, wz: float, font: pygame.font.Font,
+    vx: float, vy: float, wz: float,
+    vx_est: float, vy_est: float, est_ready: bool,
+    font: pygame.font.Font,
 ) -> None:
     ox, oy = origin
     w, h = size
@@ -192,8 +273,20 @@ def draw_velocity_hud(
     pygame.draw.line(surface, (70, 70, 80), (ox + 10, cy), (ox + w - 10, cy), 1)
     pygame.draw.line(surface, (70, 70, 80), (cx, oy + 10, ), (cx, oy + h - 10), 1)
 
-    # Vector tip (vx forward = up)
     half = min(w, h) // 2 - 14
+
+    # Estimated body-frame velocity vector (orange). vx_est forward = up,
+    # vy_est left = left on screen.
+    est_color = (220, 140, 70) if est_ready else (110, 80, 60)
+    sx = max(-1.0, min(1.0, vx_est / EST_VEL_FULL_MPS))
+    sy = max(-1.0, min(1.0, vy_est / EST_VEL_FULL_MPS))
+    est_tip_x = cx - int(sy * half)
+    est_tip_y = cy - int(sx * half)
+    pygame.draw.line(surface, est_color, (cx, cy), (est_tip_x, est_tip_y), 3)
+    pygame.draw.circle(surface, est_color, (est_tip_x, est_tip_y), 5)
+
+    # Commanded vector tip (vx forward = up, green). Drawn on top so the
+    # operator's input always wins the foreground.
     tip_x = cx + int(vy * half)
     tip_y = cy - int(vx * half)
     pygame.draw.line(surface, (90, 200, 140), (cx, cy), (tip_x, tip_y), 4)
@@ -208,13 +301,19 @@ def draw_velocity_hud(
             pygame.draw.arc(surface, (220, 160, 60), arc_rect, 1.6 * wz + 6.28, 6.28, 3)
 
     # Numeric readout below
-    text = f"vx={vx:+.2f}  vy={vy:+.2f}  wz={wz:+.2f}"
-    surface.blit(font.render(text, True, (220, 220, 220)), (ox + 8, oy + h + 6))
+    cmd_text = f"cmd vx={vx:+.2f}  vy={vy:+.2f}  wz={wz:+.2f}"
+    if est_ready:
+        est_text = f"est vx={vx_est:+.2f}  vy={vy_est:+.2f} m/s"
+    else:
+        est_text = "est ...waiting for telemetry..."
+    surface.blit(font.render(cmd_text, True, (220, 220, 220)), (ox + 8, oy + h + 6))
+    surface.blit(font.render(est_text, True, est_color), (ox + 8, oy + h + 22))
 
 
 def render_input(
     panel: WindowPanel, host: str, port: int, rate_hz: int,
     pressed: set[int], vx: float, vy: float, wz: float,
+    vx_est: float, vy_est: float, est_ready: bool,
     last_apply_t: float, dirty: bool, focused: bool,
     apply_btn: Button, big_font: pygame.font.Font, font: pygame.font.Font,
 ) -> None:
@@ -234,7 +333,9 @@ def render_input(
     s.blit(font.render(focus_label, True, (200, 220, 140) if focused else (200, 120, 60)),
            (INPUT_SIZE[0] - 140, 14))
 
-    draw_velocity_hud(s, (16, 100), (200, 160), vx, vy, wz, font)
+    draw_velocity_hud(
+        s, (16, 100), (200, 160), vx, vy, wz, vx_est, vy_est, est_ready, font,
+    )
 
     # Pressed-key chips
     chips_x = 240
@@ -465,15 +566,28 @@ def main() -> int:
         print("host is required", file=sys.stderr)
         return 2
 
+    estimator = VelocityEstimator()
+
+    def _on_telemetry(raw: bytes) -> None:
+        pkt = parse_telemetry(raw)
+        if pkt is not None:
+            estimator.on_packet(pkt)
+
     camera_registry = CameraRegistry()
-    client = RoverCClient(host, port, camera_registry=camera_registry)
+    client = RoverCClient(
+        host, port, camera_registry=camera_registry, on_telemetry=_on_telemetry,
+    )
+
+    # Register sender (StickC pushes telemetry to the last UDP src) and turn
+    # telemetry on so the velocity estimator gets fed.
+    client.send_motion(0.0, 0.0, 0.0)
+    time.sleep(0.05)
+    client.send_config_dict({"tel": True})
 
     if args.coefs is not None:
-        # Register sender so the firmware accepts cfg/poly packets, then blast
-        # the saved polynomial table. Manual slider tweaks below still write
-        # the constant a[0][0] term of STEADY/KICK cells via the JSON cfg path.
-        client.send_motion(0.0, 0.0, 0.0)
-        time.sleep(0.05)
+        # Blast the saved polynomial table. Manual slider tweaks below still
+        # write the constant a[0][0] term of STEADY/KICK cells via the JSON
+        # cfg path.
         coefs = load_coefs_json(args.coefs)
         n_sent = push_coefs(coefs, client.send_poly_chunk, client.send_config_dict)
         print(f"pushed {n_sent} polynomial chunks from {args.coefs}")
@@ -625,6 +739,9 @@ def main() -> int:
         wz = sum(amount for k, (axis, amount) in key_axis.items() if axis == "wz" and k in pressed)
         client.send_motion(vx, vy, wz)
 
+        estimator.set_idle(not pressed)
+        vx_est, vy_est, est_ready = estimator.snapshot()
+
         # Auto-start camera streams when StickC reports them.
         for role in CAMERA_ROLES:
             state = stream_states[role]
@@ -638,6 +755,7 @@ def main() -> int:
 
         render_input(
             input_panel, host, port, rate_hz, pressed, vx, vy, wz,
+            vx_est, vy_est, est_ready,
             last_apply_t, dirty, focused_id == input_panel.id,
             input_apply_btn, big_font, font,
         )
