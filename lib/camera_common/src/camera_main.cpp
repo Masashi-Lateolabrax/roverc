@@ -40,7 +40,7 @@ static constexpr uint16_t HTTP_PORT = 80;
 // We use Wire1 (I2C1) so the camera SCCB on I2C0 is unaffected.
 static constexpr int I2C_SDA_PIN = 4;
 static constexpr int I2C_SCL_PIN = 13;
-static constexpr uint32_t I2C_FREQ = 100000;
+static constexpr uint32_t I2C_FREQ = 50000;
 static constexpr uint8_t I2C_ADDR_LEFT = 0x40;
 static constexpr uint8_t I2C_ADDR_RIGHT = 0x41;
 static constexpr uint8_t I2C_ADDR_FISHEYE = 0x42;
@@ -82,7 +82,7 @@ static uint8_t  g_consecutive_fb_fails = 0;
 // the StickC master can no longer probe us, even though HTTP keeps working.
 // We track the timestamp of the last on_i2c_request callback; if no master
 // has polled in I2C_SLAVE_HEAL_MS we tear Wire1 down and bring it back up.
-static constexpr uint32_t I2C_SLAVE_HEAL_MS = 10000;
+static constexpr uint32_t I2C_SLAVE_HEAL_MS = 3000;
 static volatile uint32_t g_last_i2c_request_ms = 0;
 
 // MJPEG flow control. The StickC master alternates a 1-byte "go" write to
