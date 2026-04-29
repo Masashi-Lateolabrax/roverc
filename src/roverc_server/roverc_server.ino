@@ -25,12 +25,13 @@ static constexpr uint32_t I2C_HZ = 50000;
 static constexpr uint8_t ROVERC_ADDR = 0x38;
 static constexpr uint8_t REG_MOTOR = 0x00;
 
-// Cameras serve an 8-byte status frame on master read:
+// Cameras serve a 10-byte status frame on master read:
 //   [0..3] IPv4 octets  [4..5] http_port (LE)  [6] camera_ok  [7] wifi_ok
+//   [8..9] vbat_mv (LE)
 static constexpr uint8_t CAM_ADDR_LEFT = 0x40;
 static constexpr uint8_t CAM_ADDR_RIGHT = 0x41;
 static constexpr uint8_t CAM_ADDR_FISHEYE = 0x42;
-static constexpr size_t CAM_FRAME_SIZE = 8;
+static constexpr size_t CAM_FRAME_SIZE = 10;
 static constexpr uint32_t CAM_PROBE_INTERVAL_MS = 1000;
 
 // MJPEG send-token broadcast. Round-robin a 1-byte write to each camera
@@ -134,6 +135,7 @@ struct CameraState {
   uint16_t http_port = 0;
   bool camera_ok = false;
   bool wifi_ok = false;
+  uint16_t vbat_mv = 0;
   uint8_t fail_streak = 0;
 };
 
@@ -469,6 +471,7 @@ static void probe_camera(CameraState &c, TwoWire &bus, uint8_t *fails_counter) {
   c.http_port = (uint16_t)buf[4] | ((uint16_t)buf[5] << 8);
   c.camera_ok = buf[6] != 0;
   c.wifi_ok = buf[7] != 0;
+  c.vbat_mv = (uint16_t)buf[8] | ((uint16_t)buf[9] << 8);
   if (fails_counter) *fails_counter = 0;
 }
 
@@ -484,6 +487,7 @@ static void emit_camera(JsonObject &cam, const char *role, const CameraState &c)
   o["ip"] = ip_buf;
   o["port"] = c.http_port;
   o["ok"] = c.camera_ok;
+  o["vbat_mv"] = c.vbat_mv;
 }
 
 static void push_camera_state() {

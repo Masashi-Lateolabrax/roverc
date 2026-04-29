@@ -53,10 +53,17 @@ static uint8_t addr_for_role(const char *role) {
   if (strcmp(role, "fisheye") == 0) return I2C_ADDR_FISHEYE;
   return I2C_ADDR_RIGHT;
 }
-// Slave response frame layout (8 bytes), read by the StickC master:
+// Slave response frame layout (10 bytes), read by the StickC master:
 //   [0..3] IPv4 octets   [4..5] http_port (LE)   [6] camera_ok   [7] wifi_ok
-static constexpr size_t I2C_RESPONSE_SIZE = 8;
+//   [8..9] vbat_mv (LE)  -- battery voltage at the JST-PH input, mV
+static constexpr size_t I2C_RESPONSE_SIZE = 10;
 static volatile uint8_t g_i2c_response[I2C_RESPONSE_SIZE] = {0};
+
+// Timer Camera X / F battery sense pin. The on-board divider halves the
+// JST-PH battery voltage onto GPIO 38 (ADC1_CH2). M5Stack's
+// `battery_voltage` example uses analogRead(38); we use the
+// mV-calibrated `analogReadMilliVolts` and multiply by 2.
+static constexpr int BAT_ADC_PIN = 38;
 
 static CameraConfig g_cfg = {};
 static WiFiUDP g_udp;
@@ -470,6 +477,9 @@ static void handle_stream() {
 static void update_i2c_response() {
   IPAddress ip = WiFi.localIP();
   bool wifi_ok = WiFi.status() == WL_CONNECTED;
+  uint32_t mv_pin = analogReadMilliVolts(BAT_ADC_PIN);
+  uint32_t vbat_mv = mv_pin * 2;  // 1:1 on-board divider
+  if (vbat_mv > 0xFFFF) vbat_mv = 0xFFFF;
   noInterrupts();
   g_i2c_response[0] = ip[0];
   g_i2c_response[1] = ip[1];
@@ -479,6 +489,8 @@ static void update_i2c_response() {
   g_i2c_response[5] = (uint8_t)((HTTP_PORT >> 8) & 0xFF);
   g_i2c_response[6] = g_camera_ok ? 1 : 0;
   g_i2c_response[7] = wifi_ok ? 1 : 0;
+  g_i2c_response[8] = (uint8_t)(vbat_mv & 0xFF);
+  g_i2c_response[9] = (uint8_t)((vbat_mv >> 8) & 0xFF);
   interrupts();
 }
 

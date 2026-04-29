@@ -10,7 +10,7 @@ PC -> StickC
 - polynomial chunk (binary, magic 0xC0, 56 B): see `coefs.py`
 
 StickC -> PC
-- camera state (JSON, ~1 Hz): {"cam": {"left": {...}|null, "right": {...}|null, "fisheye": {...}|null}}
+- camera state (JSON, ~1 Hz): {"cam": {"left": {"ip","port","ok","vbat_mv"}|null, ...}}
 - telemetry (binary, magic 0xD2, 25 Hz, 73 B): see `telemetry.py`
 
 The receive loop demultiplexes binary telemetry to `on_telemetry` and JSON
@@ -141,5 +141,7 @@ class RoverCClient:
                 ip = entry.get("ip")
                 p = entry.get("port")
                 ok = entry.get("ok", False)
+                vbat = entry.get("vbat_mv")
+                vbat_mv = int(vbat) if isinstance(vbat, int) else None
                 if isinstance(ip, str) and isinstance(p, int):
-                    self._registry.update(role, ip, p, bool(ok))
+                    self._registry.update(role, ip, p, bool(ok), vbat_mv=vbat_mv)
