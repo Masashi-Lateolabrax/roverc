@@ -536,9 +536,8 @@ static void connect_wifi() {
 
   M5.Display.fillScreen(BLACK);
   M5.Display.setCursor(0, 0);
-  M5.Display.printf("OK %s\n", WIFI_SSID);
-  M5.Display.printf("IP %s\n", WiFi.localIP().toString().c_str());
-  M5.Display.printf("PORT %u\n", SERVER_PORT);
+  M5.Display.printf("%s\n", WIFI_SSID);
+  M5.Display.printf("%s\n", WiFi.localIP().toString().c_str());
 }
 
 static void apply_config(JsonObjectConst cfg) {
@@ -624,16 +623,6 @@ static void poll_udp() {
   g_packets_received++;
 }
 
-static char phase_char(Phase p) {
-  switch (p) {
-    case PH_KICK:   return 'K';
-    case PH_STEADY: return 'S';
-    case PH_BRAKE:  return 'B';
-    case PH_IDLE:
-    default:        return 'I';
-  }
-}
-
 static void update_lcd() {
   uint32_t now = millis();
   if (now < g_next_lcd_ms) return;
@@ -642,44 +631,46 @@ static void update_lcd() {
   uint32_t age = now - g_last_packet_ms;
   bool failsafe = (age > FAILSAFE_MS);
 
-  M5.Display.fillRect(0, 50, M5.Display.width(), M5.Display.height() - 50, BLACK);
-  M5.Display.setCursor(0, 50);
+  // Header (SSID + IP) occupies y=0..32 at textSize 2; body starts below.
+  static constexpr int LCD_BODY_Y = 34;
+  M5.Display.fillRect(0, LCD_BODY_Y, M5.Display.width(), M5.Display.height() - LCD_BODY_Y, BLACK);
+  M5.Display.setCursor(0, LCD_BODY_Y);
   M5.Display.setTextColor(failsafe ? RED : GREEN, BLACK);
   M5.Display.printf("age %5lu ms\n", static_cast<unsigned long>(age));
   M5.Display.setTextColor(WHITE, BLACK);
-  M5.Display.printf("rx %lu cfg %lu\n",
-                    static_cast<unsigned long>(g_packets_received),
-                    static_cast<unsigned long>(g_configs_received));
-  M5.Display.printf("m%4d%4d%4d%4d\n",
-                    g_motors[0], g_motors[1], g_motors[2], g_motors[3]);
-
-  // Per-wheel phase indicator (KSBI letters for FL FR RL RR). Yellow when
-  // any wheel is currently in BRAKE (lets brake events flash visibly when
-  // the user releases). Cyan when telemetry push is enabled.
-  bool any_brake = false;
-  for (int i = 0; i < 4; ++i) {
-    if (g_motor_state[i].phase == PH_BRAKE) { any_brake = true; break; }
-  }
-  uint16_t ph_color = any_brake ? YELLOW : (g_cfg.tel_en ? CYAN : WHITE);
-  M5.Display.setTextColor(ph_color, BLACK);
-  M5.Display.printf("phase %c%c%c%c poly%4lu\n",
-                    phase_char(g_motor_state[0].phase),
-                    phase_char(g_motor_state[1].phase),
-                    phase_char(g_motor_state[2].phase),
-                    phase_char(g_motor_state[3].phase),
-                    static_cast<unsigned long>(g_poly_chunks_received));
-  M5.Display.setTextColor(WHITE, BLACK);
-
-  auto cam_glyph = [](const CameraState &c) -> char {
-    if (c.present && c.wifi_ok && c.camera_ok) return 'o';
-    if (c.present && c.wifi_ok) return 'w';   // StickC sees it but its camera fb fails
-    if (c.present) return 'p';                 // I2C ACK but no WiFi
-    return '.';                                 // I2C NACK / absent
+  // Per-wheel phase encoded in the per-motor value color. WHITE = IDLE,
+  // CYAN = KICK (transient), GREEN = STEADY, YELLOW = BRAKE.
+  auto phase_color = [](Phase p) -> uint16_t {
+    switch (p) {
+      case PH_KICK:   return CYAN;
+      case PH_STEADY: return GREEN;
+      case PH_BRAKE:  return YELLOW;
+      default:        return WHITE;
+    }
   };
-  M5.Display.printf("cam L%c R%c F%c\n",
-                    cam_glyph(g_cam_left),
-                    cam_glyph(g_cam_right),
-                    cam_glyph(g_cam_fisheye));
+  M5.Display.print("m");
+  for (int i = 0; i < 4; ++i) {
+    M5.Display.setTextColor(phase_color(g_motor_state[i].phase), BLACK);
+    M5.Display.printf("%4d", g_motors[i]);
+  }
+  M5.Display.setTextColor(WHITE, BLACK);
+  M5.Display.print("\n");
+
+  // Per-camera status color: GREEN = full ok (I2C + WiFi + camera_ok),
+  // YELLOW = I2C ACK but WiFi or camera_ok failing, RED = I2C NACK.
+  auto cam_color = [](const CameraState &c) -> uint16_t {
+    if (c.present && c.wifi_ok && c.camera_ok) return GREEN;
+    if (c.present) return YELLOW;
+    return RED;
+  };
+  M5.Display.print("cam ");
+  M5.Display.setTextColor(cam_color(g_cam_left), BLACK);
+  M5.Display.print("L ");
+  M5.Display.setTextColor(cam_color(g_cam_right), BLACK);
+  M5.Display.print("R ");
+  M5.Display.setTextColor(cam_color(g_cam_fisheye), BLACK);
+  M5.Display.print("F\n");
+  M5.Display.setTextColor(WHITE, BLACK);
 
   int bat_pct = M5.Power.getBatteryLevel();
   int bat_mv = M5.Power.getBatteryVoltage();
