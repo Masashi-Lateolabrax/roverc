@@ -48,7 +48,18 @@ TRIM_GRID_POS = {
     "rear_right": (1, 1),
 }
 
-INPUT_SIZE = (600, 320)
+INPUT_SIZE = (600, 372)
+BATTERY_STRIP_Y = 320
+BATTERY_STRIP_H = 44
+# Per-cell Li-ion thresholds for the camera battery widgets. The Timer Camera
+# X / F all run on a single 18650-style cell (~4.2V full, ~3.7V nominal,
+# ~3.0V dead). Pick GREEN/YELLOW/RED bands a bit conservative so the user
+# sees YELLOW before the camera actually browns out.
+CAM_VBAT_GREEN_MV = 3800
+CAM_VBAT_YELLOW_MV = 3500
+# StickC battery thresholds (% from M5.Power.getBatteryLevel()).
+STICK_PCT_GREEN = 30
+STICK_PCT_YELLOW = 10
 SETTINGS_SIZE = (820, 600)
 CAMERA_VIEW_SIZE = (320, 240)
 CAMERA_ROLES = ("left", "right", "fisheye")
@@ -67,6 +78,123 @@ IMU_FWD_AXIS = 0
 IMU_FWD_SIGN = +1.0
 IMU_LEFT_AXIS = 1
 IMU_LEFT_SIGN = +1.0
+
+
+class LatestTelemetry:
+    """Single-slot thread-safe holder for the most recent TelemetryPacket.
+    Fed from RoverCClient's rx thread, read by the render loop for the
+    battery widgets."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._pkt: TelemetryPacket | None = None
+
+    def update(self, pkt: TelemetryPacket) -> None:
+        with self._lock:
+            self._pkt = pkt
+
+    def latest(self) -> TelemetryPacket | None:
+        with self._lock:
+            return self._pkt
+
+
+def _voltage_color(mv: int | None) -> tuple[int, int, int]:
+    if mv is None or mv <= 0:
+        return (110, 110, 120)
+    if mv >= CAM_VBAT_GREEN_MV:
+        return (90, 200, 140)
+    if mv >= CAM_VBAT_YELLOW_MV:
+        return (220, 200, 80)
+    return (220, 90, 90)
+
+
+def _stick_color(pct: int | None) -> tuple[int, int, int]:
+    if pct is None:
+        return (110, 110, 120)
+    if pct >= STICK_PCT_GREEN:
+        return (90, 200, 140)
+    if pct >= STICK_PCT_YELLOW:
+        return (220, 200, 80)
+    return (220, 90, 90)
+
+
+def _draw_battery_chip(
+    surface: pygame.Surface, rect: pygame.Rect,
+    label: str, value: str, sub: str,
+    accent: tuple[int, int, int],
+    label_font: pygame.font.Font, value_font: pygame.font.Font,
+) -> None:
+    pygame.draw.rect(surface, (40, 40, 52), rect, border_radius=6)
+    pygame.draw.rect(surface, accent, rect, width=2, border_radius=6)
+    surface.blit(label_font.render(label, True, (200, 200, 210)),
+                 (rect.x + 8, rect.y + 4))
+    surface.blit(value_font.render(value, True, accent),
+                 (rect.x + 8, rect.y + 18))
+    if sub:
+        sub_surf = label_font.render(sub, True, (180, 180, 195))
+        surface.blit(sub_surf,
+                     (rect.right - sub_surf.get_width() - 8, rect.y + 26))
+
+
+def draw_battery_strip(
+    surface: pygame.Surface, origin: tuple[int, int], size: tuple[int, int],
+    pkt: TelemetryPacket | None,
+    registry: CameraRegistry,
+    label_font: pygame.font.Font, value_font: pygame.font.Font,
+) -> None:
+    """5 chips across the strip: StickC, left cam, right cam, fisheye cam,
+    RoverC (proxied via StickC isCharging)."""
+    ox, oy = origin
+    w, h = size
+    n = 5
+    gap = 6
+    chip_w = (w - gap * (n - 1)) // n
+
+    # StickC
+    if pkt is None:
+        stick_label, stick_val, stick_sub, stick_color = (
+            "Stick", "—", "no telem", (110, 110, 120)
+        )
+    else:
+        stick_color = _stick_color(pkt.bat_pct)
+        stick_val = f"{pkt.vbat_mv / 1000:.2f}V" if pkt.vbat_mv else "—"
+        stick_sub = f"{pkt.bat_pct}%" if pkt.bat_pct is not None else ""
+        if pkt.charging is True:
+            stick_sub = (stick_sub + " +").strip()
+        stick_label = "Stick"
+
+    chips: list[tuple[str, str, str, tuple[int, int, int]]] = [
+        (stick_label, stick_val, stick_sub, stick_color),
+    ]
+
+    # Cameras
+    for role, label in (("left", "L"), ("right", "R"), ("fisheye", "F")):
+        info = registry.latest(role)
+        if info is None or info.vbat_mv is None or info.vbat_mv <= 0:
+            chips.append((label, "—", "no probe", (110, 110, 120)))
+            continue
+        chips.append((
+            label,
+            f"{info.vbat_mv / 1000:.2f}V",
+            "",
+            _voltage_color(info.vbat_mv),
+        ))
+
+    # RoverC (proxied). The StickC PMU's isCharging flag goes True when 5V is
+    # supplied on the HAT bus, which on this rig means RoverC is on. When the
+    # RoverC battery dies, 5V collapses and the flag flips to False. NOTE: this
+    # proxy is unreliable while the StickC is also USB-powered (during dev).
+    if pkt is None or pkt.charging is None:
+        chips.append(("Rover", "—", "no telem", (110, 110, 120)))
+    elif pkt.charging:
+        chips.append(("Rover", "OK", "via 5V", (90, 200, 140)))
+    else:
+        chips.append(("Rover", "DYING", "5V lost", (220, 90, 90)))
+
+    for i, (label, value, sub, accent) in enumerate(chips):
+        rx = ox + i * (chip_w + gap)
+        rect = pygame.Rect(rx, oy, chip_w, h)
+        _draw_battery_chip(surface, rect, label, value, sub, accent, label_font, value_font)
 
 
 class VelocityEstimator:
@@ -319,6 +447,7 @@ def render_input(
     vx_est: float, vy_est: float, est_ready: bool,
     last_apply_t: float, dirty: bool, focused: bool,
     apply_btn: Button, big_font: pygame.font.Font, font: pygame.font.Font,
+    latest_pkt: TelemetryPacket | None, camera_registry: CameraRegistry,
 ) -> None:
     s = panel.surface
     s.fill((20, 20, 28))
@@ -363,6 +492,11 @@ def render_input(
         s.blit(txt, txt.get_rect(center=(rx + chip_w // 2, ry + chip_h // 2)))
 
     apply_btn.draw(s, big_font, accent=dirty)
+
+    draw_battery_strip(
+        s, (16, BATTERY_STRIP_Y), (INPUT_SIZE[0] - 32, BATTERY_STRIP_H),
+        latest_pkt, camera_registry, font, big_font,
+    )
 
 
 def render_settings(
@@ -572,11 +706,13 @@ def main() -> int:
         return 2
 
     estimator = VelocityEstimator()
+    latest_telemetry = LatestTelemetry()
 
     def _on_telemetry(raw: bytes) -> None:
         pkt = parse_telemetry(raw)
         if pkt is not None:
             estimator.on_packet(pkt)
+            latest_telemetry.update(pkt)
 
     camera_registry = CameraRegistry()
     client = RoverCClient(
@@ -620,7 +756,7 @@ def main() -> int:
         framesize_choice, quality_slider,
     ) = build_settings_layout(initial_max, initial_trim)
     input_apply_btn = Button(
-        pygame.Rect(INPUT_SIZE[0] - 132, INPUT_SIZE[1] - 50, 116, 36), "Apply",
+        pygame.Rect(INPUT_SIZE[0] - 132, BATTERY_STRIP_Y - 46, 116, 36), "Apply",
     )
 
     stream_states: dict[str, dict] = {
@@ -763,6 +899,7 @@ def main() -> int:
             vx_est, vy_est, est_ready,
             last_apply_t, dirty, focused_id == input_panel.id,
             input_apply_btn, big_font, font,
+            latest_telemetry.latest(), camera_registry,
         )
         render_settings(
             settings_panel, sliders, quad_rects, settings_apply_btn, dirty,

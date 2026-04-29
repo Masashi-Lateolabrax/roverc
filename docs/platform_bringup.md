@@ -130,6 +130,33 @@
 
 ---
 
+## バッテリテレメトリ
+
+5 個の独立給電デバイス（StickC Plus2、RoverC、左右 + 魚眼カメラ）の電池切れを silent failure ではなく可視化するため、teleop UI の入力パネル下端に 5 並びのバッテリ widget を表示する。
+
+| デバイス | 取得経路 | 値 |
+|---|---|---|
+| StickC Plus2 | `M5.Power.getBatteryVoltage/Level/isCharging`、25Hz telemetry の trailer に同梱（PR #16, magic 0xD2） | mV / % / charging |
+| 左 / 右 / 魚眼カメラ | カメラ側 `analogReadMilliVolts(38) * 2`（GPIO 38 の 1:1 on-board 分圧）、I2C status frame の `[8..9]` に LE で乗せて StickC が `~1Hz` JSON で PC へ伝搬（PR #17） | mV |
+| RoverC | **直読み不可**（公式 I2C プロトコルにバッテリレジスタなし、STM32F030 ファームは閉じ／書き換え非実用）。代理として StickC `isCharging` を見る — RoverC が HAT バスに 5V を供給している間 True、バッテリが落ちると 5V が崩れて False に flip する | OK / DYING |
+
+### RoverC proxy の信頼境界
+
+`isCharging` は外部給電が電池電圧を上回ると True を返すので, RoverC の電池が生きている間は HAT バス 5V 経由で True が返る. 電池が落ちて 5V レールが崩壊すると False に切り替わる. ただし以下の状況では proxy が誤る:
+
+- StickC が USB ケーブル経由でも給電されているとき（開発時）→ RoverC の状態に関係なく True に張り付く
+- RoverC のメインスイッチが OFF のとき → False（誤って "DYING" 表示になるが事実上 OFF）
+
+代替案: RoverC BAT+ レールから StickC ADC ピン（HAT 8 ピンヘッダの G36 / G25）へ直結ハンダ → `analogRead`. 初手では実装せず, proxy の不足が観測されたら escalate.
+
+### 閾値
+
+- StickC %: ≥ 30 GREEN / 10–30 YELLOW / < 10 RED
+- カメラ mV: ≥ 3800 GREEN / 3500–3800 YELLOW / < 3500 RED（1S Li-ion 想定で保守的）
+- 値が読めない / probe 未着 → グレー "—"
+
+---
+
 ## タイムライン
 
 学生作業（CLAUDE.md「学生作業の年間スケジュール」）との整合確認用：
