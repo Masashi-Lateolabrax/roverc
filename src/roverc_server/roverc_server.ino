@@ -43,7 +43,7 @@ static uint8_t  g_token_target = 0;  // 0=left, 1=right
 // without obvious airtime contention. Disabled by default; PC opts in via
 // `cfg.tel = true`.
 static constexpr uint32_t TEL_PERIOD_MS = 40;
-static constexpr uint8_t  TEL_MAGIC = 0xD0;
+static constexpr uint8_t  TEL_MAGIC = 0xD1;
 static uint32_t g_next_tel_ms = 0;
 
 // Binary polynomial-coefficient packet format (sent as its own UDP datagram,
@@ -339,32 +339,42 @@ static void compute_motors(float vx, float vy, float wz, uint32_t now, int8_t ou
   }
 }
 
-// Telemetry binary packet (49 bytes total, magic 0xD0):
-//   [0]      0xD0
+// Telemetry binary packet (69 bytes total, magic 0xD1):
+//   [0]      0xD1
 //   [1..4]   uint32 LE  millis()
-//   [5..8]   float       gz_dps   (raw gyro Z, PC subtracts bias)
-//   [9..12]  uint8[4]    phase    (PH_*)
-//   [13..28] float[4]    s_pre    (normalized BRAKE snapshot per wheel)
-//   [29..32] int8[4]     motor    (commanded I2C value)
-//   [33..48] float[4]    s_norm   (current-tick normalized s, ∈ [-1, 1])
+//   [5..8]   float       gx_dps   (raw gyro X, deg/s; PC subtracts bias)
+//   [9..12]  float       gy_dps   (raw gyro Y, deg/s)
+//   [13..16] float       gz_dps   (raw gyro Z, deg/s)
+//   [17..20] float       ax_g     (raw accel X, g; M5Unified default unit)
+//   [21..24] float       ay_g     (raw accel Y, g)
+//   [25..28] float       az_g     (raw accel Z, g)
+//   [29..32] uint8[4]    phase    (PH_*)
+//   [33..48] float[4]    s_pre    (normalized BRAKE snapshot per wheel)
+//   [49..52] int8[4]     motor    (commanded I2C value)
+//   [53..68] float[4]    s_norm   (current-tick normalized s, ∈ [-1, 1])
 static void push_telemetry() {
   if (!g_cfg.tel_en) return;
   if (g_last_sender == IPAddress(0, 0, 0, 0) || g_last_sender_port == 0) return;
 
-  uint8_t buf[64];
+  uint8_t buf[80];
   size_t off = 0;
   buf[off++] = TEL_MAGIC;
 
   uint32_t t = millis();
   memcpy(buf + off, &t, 4); off += 4;
 
-  float gz_dps = 0.0f;
+  float gx = 0.0f, gy = 0.0f, gz = 0.0f;
+  float ax = 0.0f, ay = 0.0f, az = 0.0f;
   if (M5.Imu.update()) {
-    float gx, gy, gz;
     M5.Imu.getGyro(&gx, &gy, &gz);
-    gz_dps = gz;
+    M5.Imu.getAccel(&ax, &ay, &az);
   }
-  memcpy(buf + off, &gz_dps, 4); off += 4;
+  memcpy(buf + off, &gx, 4); off += 4;
+  memcpy(buf + off, &gy, 4); off += 4;
+  memcpy(buf + off, &gz, 4); off += 4;
+  memcpy(buf + off, &ax, 4); off += 4;
+  memcpy(buf + off, &ay, 4); off += 4;
+  memcpy(buf + off, &az, 4); off += 4;
 
   for (int i = 0; i < 4; ++i) buf[off++] = static_cast<uint8_t>(g_motor_state[i].phase);
   for (int i = 0; i < 4; ++i) {

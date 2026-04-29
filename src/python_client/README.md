@@ -12,7 +12,7 @@ PC 側コード。ユーザ向けの起動・運用手順は **トップレベ�
 | `roverc.py` | `RoverCClient`（UDP socket、JSON / binary 多重化、telemetry rx loop） |
 | `camera.py` | `CameraRegistry` + `CameraStream`（HTTP MJPEG 受信） |
 | `coefs.py` | 多項式係数の dataclass、JSON I/O、binary chunk encoder、CMA-ES vector pack/unpack |
-| `telemetry.py` | 0xD0 packet パーサ + thread-safe ring buffer |
+| `telemetry.py` | 0xD1 packet パーサ + thread-safe ring buffer |
 | `widgets.py` | pygame の Slider / Button / ChoiceRow |
 
 ## 依存関係
@@ -82,16 +82,21 @@ PC ↔ StickC は単一 UDP ポート（既定 4210）で 4 種多重化。
 ファーム I2C プローブが拾った左右カメラの IP / port / `camera_ok` を伝搬。
 `null` は不在。
 
-#### telemetry（binary 49 B, 25 Hz when `cfg.tel = true`）
+#### telemetry（binary 69 B, 25 Hz when `cfg.tel = true`）
 
 ```
-[0]       magic 0xD0
+[0]       magic 0xD1
 [1..4]    uint32 LE  millis()                     -> fw_t_ms
-[5..8]    float       gz_dps      (raw gyro Z, deg/s)
-[9..12]   uint8[4]    phase       (PH_IDLE=0, KICK=1, STEADY=2, BRAKE=3)
-[13..28]  float[4]    s_pre       (BRAKE-entry snapshot of normalised s)
-[29..32]  int8[4]     motor       (commanded I2C value)
-[33..48]  float[4]    s_norm      (current-tick normalised m_i, ∈ [-1, 1])
+[5..8]    float       gx_dps      (raw gyro X, deg/s)
+[9..12]   float       gy_dps      (raw gyro Y, deg/s)
+[13..16]  float       gz_dps      (raw gyro Z, deg/s)
+[17..20]  float       ax_g        (raw accel X, g; M5Unified default unit)
+[21..24]  float       ay_g        (raw accel Y, g)
+[25..28]  float       az_g        (raw accel Z, g)
+[29..32]  uint8[4]    phase       (PH_IDLE=0, KICK=1, STEADY=2, BRAKE=3)
+[33..48]  float[4]    s_pre       (BRAKE-entry snapshot of normalised s)
+[49..52]  int8[4]     motor       (commanded I2C value)
+[53..68]  float[4]    s_norm      (current-tick normalised m_i, ∈ [-1, 1])
 ```
 
 `telemetry.parse(raw)` → `TelemetryPacket`（`pc_t` は受信時の `time.monotonic()`）。

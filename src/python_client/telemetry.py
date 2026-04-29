@@ -1,13 +1,18 @@
-"""Receiver for the firmware's 25 Hz binary telemetry packets (magic 0xD0).
+"""Receiver for the firmware's 25 Hz binary telemetry packets (magic 0xD1).
 
-Wire format (49 B, must match `push_telemetry()` in roverc_server.ino):
-  [0]      0xD0
+Wire format (69 B, must match `push_telemetry()` in roverc_server.ino):
+  [0]      0xD1
   [1..4]   uint32 LE  millis()                       -> fw_t_ms
-  [5..8]   float       gz_dps
-  [9..12]  uint8[4]    phase   (PH_IDLE=0, KICK=1, STEADY=2, BRAKE=3)
-  [13..28] float[4]    s_pre   (BRAKE-entry snapshot of normalised s, ∈ [-1,1])
-  [29..32] int8[4]     motor   (commanded I2C value)
-  [33..48] float[4]    s_norm  (current-tick normalised m_i)
+  [5..8]   float       gx_dps
+  [9..12]  float       gy_dps
+  [13..16] float       gz_dps
+  [17..20] float       ax_g    (M5Unified default unit: g, 1.0 == 9.81 m/s^2)
+  [21..24] float       ay_g
+  [25..28] float       az_g
+  [29..32] uint8[4]    phase   (PH_IDLE=0, KICK=1, STEADY=2, BRAKE=3)
+  [33..48] float[4]    s_pre   (BRAKE-entry snapshot of normalised s, in [-1,1])
+  [49..52] int8[4]     motor   (commanded I2C value)
+  [53..68] float[4]    s_norm  (current-tick normalised m_i)
 """
 from __future__ import annotations
 
@@ -17,8 +22,8 @@ import time
 from collections import deque
 from dataclasses import dataclass
 
-TEL_MAGIC = 0xD0
-TEL_BYTES = 49
+TEL_MAGIC = 0xD1
+TEL_BYTES = 69
 
 PHASE_NAMES = ("IDLE", "KICK", "STEADY", "BRAKE")
 
@@ -27,7 +32,12 @@ PHASE_NAMES = ("IDLE", "KICK", "STEADY", "BRAKE")
 class TelemetryPacket:
     pc_t: float           # PC monotonic seconds at receive
     fw_t_ms: int          # StickC millis() at send
+    gx_dps: float         # raw gyro X, deg/s
+    gy_dps: float         # raw gyro Y, deg/s
     gz_dps: float         # raw gyro Z, deg/s
+    ax_g: float           # raw accel X, g
+    ay_g: float           # raw accel Y, g
+    az_g: float           # raw accel Z, g
     phase: tuple[int, ...]    # 4 ints; per-wheel phase enum (PHASE_NAMES index)
     s_pre: tuple[float, ...]  # 4 floats; BRAKE snapshot per wheel
     motor: tuple[int, ...]    # 4 ints;   commanded I2C int8
@@ -40,15 +50,21 @@ def parse(raw: bytes, pc_t: float | None = None) -> TelemetryPacket | None:
     if pc_t is None:
         pc_t = time.monotonic()
     fw_t_ms, = struct.unpack_from("<I", raw, 1)
-    gz_dps, = struct.unpack_from("<f", raw, 5)
-    phase = struct.unpack_from("<4B", raw, 9)
-    s_pre = struct.unpack_from("<4f", raw, 13)
-    motor = struct.unpack_from("<4b", raw, 29)
-    s_norm = struct.unpack_from("<4f", raw, 33)
+    gx_dps, gy_dps, gz_dps = struct.unpack_from("<3f", raw, 5)
+    ax_g, ay_g, az_g = struct.unpack_from("<3f", raw, 17)
+    phase = struct.unpack_from("<4B", raw, 29)
+    s_pre = struct.unpack_from("<4f", raw, 33)
+    motor = struct.unpack_from("<4b", raw, 49)
+    s_norm = struct.unpack_from("<4f", raw, 53)
     return TelemetryPacket(
         pc_t=float(pc_t),
         fw_t_ms=int(fw_t_ms),
+        gx_dps=float(gx_dps),
+        gy_dps=float(gy_dps),
         gz_dps=float(gz_dps),
+        ax_g=float(ax_g),
+        ay_g=float(ay_g),
+        az_g=float(az_g),
         phase=tuple(int(x) for x in phase),
         s_pre=tuple(float(x) for x in s_pre),
         motor=tuple(int(x) for x in motor),

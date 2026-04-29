@@ -11,7 +11,7 @@ PC -> StickC
 
 StickC -> PC
 - camera state (JSON, ~1 Hz): {"cam": {"left": {...}|null, "right": {...}|null}}
-- telemetry (binary, magic 0xD0, 25 Hz, 49 B): see `telemetry.py`
+- telemetry (binary, magic 0xD1, 25 Hz, 69 B): see `telemetry.py`
 
 The receive loop demultiplexes binary telemetry to `on_telemetry` and JSON
 camera-state into the optional `CameraRegistry`. Both are off by default; if
@@ -116,7 +116,7 @@ class RoverCClient:
                 continue
 
             # Binary telemetry: cheap dispatch on the magic byte.
-            if data[0] == 0xD0 and self._on_telemetry is not None:
+            if data[0] == 0xD1 and self._on_telemetry is not None:
                 try:
                     self._on_telemetry(data)
                 except Exception:

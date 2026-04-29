@@ -22,6 +22,7 @@
 - **プラットフォーム bring-up 詳細** → `docs/platform_bringup.md`
 - **カメラストリーミング debug 知見**（MJPEG / urllib `read1` coalescing / Wire1 self-heal / I2C bus recovery / XCLK 8MHz 等）→ `docs/camera_streaming_lessons.md`
 - **別ライン研究プログラム候補（進学予定学生向け）** → `docs/async_stereo_interpolation.md`
+- **魚眼カメラ + IMU による VIO 速度推定ロードマップ** → `docs/fisheye_vio_roadmap.md`
 - **RoverC ハード仕様** → `docs/roverc_datasheet.pdf` / `docs/roverc_pro_datasheet.pdf` / `docs/roverc_i2c_protocol.pdf`
 - **StickC Plus2 schematic** → `docs/stickc_plus2_schematic.pdf`
 
@@ -42,6 +43,7 @@
 
 - `docs/platform_bringup.md`: 指導者作業のプラットフォーム bring-up 5段ロードマップ
 - `docs/async_stereo_interpolation.md`: 別ライン研究プログラム候補（進学予定学生向けに温存。本卒研 = Mediator プログラムとは独立）
+- `docs/fisheye_vio_roadmap.md`: Timer Camera F + IMU 単眼魚眼 VIO による速度推定ロードマップ（platform bring-up と独立、段3 完了後に着手可）
 
 ## 研究の構造
 
@@ -100,6 +102,7 @@ NNに（状況 + 複数オペレータの指示）を入力し、誰のどの指
 - M5StickC Plus2 × 1（運用、2026-04-26 確定）
 - M5StickC 無印（予備、swap 用）
 - M5Stack Timer Camera X × 5（運用2 = 前方ステレオ on RoverC、予備3）
+- M5Stack Timer Camera F × 1（魚眼、在庫。`docs/fisheye_vio_roadmap.md` 経由で VIO 速度推定用に搭載予定）
 - PC × 1（Python開発）
 - 入力装置：ジョイスティック or キーボード × 2人分
 
