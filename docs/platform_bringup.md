@@ -208,18 +208,28 @@ StickC Plus2 も同様に AXP192 が「外部給電 (= HAT 5V) > 電池電圧」
 
 ### 電流予算
 
-公式データシートに RoverC 出力電流仕様の記載なし. 推測値:
+公式データシートに RoverC の boost 出力電流仕様の記載なし. ただし M5 が 2 つの Grove I2C ポートを「expansion module 用」と明示している以上, base 負荷 (motors + StickC) + 数百 mA の expansion 余裕は specced されているはず.
 
-| 負荷 | 典型 | ピーク |
-|---|---|---|
-| 4 N20 モータ idle | ~100 mA | ~500 mA |
-| 4 N20 モータ 中速 | ~400 mA | ~1.5 A |
-| 4 N20 モータ stall (短時間) | — | ~4 A |
-| 3 カメラ VSYS run | ~600 mA | ~900 mA |
-| 3 カメラ TP4057 充電 (USB-C 配線時) | +714 mA | +714 mA |
-| StickC | ~80 mA | ~150 mA |
+連続電流の試算 (推測, ±20%):
 
-走行 + 全カメラ充電同時で **典型 1.5–2 A**, ピーク **3 A 超**. 1–2 A 級 boost converter には厳しい. Boost が dropout すると 5V レール sag → カメラ / StickC 再起動ループ or RoverC 電池保護回路が発動して全停止.
+| 負荷 | 連続値 |
+|---|---|
+| 4 N20 モータ 中速 | ~400 mA |
+| 3 カメラ VSYS run | ~600 mA |
+| StickC | ~80 mA |
+| **base 合計** | **~1.1 A** |
+| 3 カメラ充電 (CC phase, **初回 ~30 分のみ**) | +714 mA |
+
+motor stall (4 A peak, 数十 ms transient) は出力キャパで吸収される領域なので連続電流の議論からは除外.
+
+### 充電電流の実態は瞬間的でない
+
+TP4057 は CC-CV 充電で, 「714 mA 連続」状態は **LiPo が空のときの最初 ~30 分だけ**. その後は CV phase で電流が漸減 (238 → 24 mA), 完了後は termination で 24 mA 以下に落ちる. 通常セッション (前回満充電済) では充電電流は数 mA レベル. つまり:
+
+- 初回充電セッション: base 1.1 A + 充電 0.7 A = **1.8 A** (~30 分のみ)
+- 2 セッション目以降: base 1.1 A + 充電 ~0.05 A = **~1.1 A** 平常運用
+
+1〜2 A 級 boost に対して初回はギリギリ, 以降は余裕という見立て.
 
 ### USB-C 充電 pigtail mod (採用予定)
 
@@ -227,37 +237,23 @@ StickC Plus2 も同様に AXP192 が「外部給電 (= HAT 5V) > 電池電圧」
 
 1. 100均の充電専用 USB-C ケーブルを剥いて 5V/GND 2 線を引き出し
 2. RoverC の Grove 5V (or Servo V) から 3-way 分岐
-3. **各分岐に PTC polyfuse をインライン挿入** (下記)
-4. 各カメラの USB-C ポートに食わせる
-5. 内蔵 LiPo が常時充電 + schottky-OR battery sharing topology が機能
+3. 各カメラの USB-C ポートに食わせる
+4. 内蔵 LiPo が常時充電 + schottky-OR battery sharing topology が機能
 
-### 配線時の保護: PTC polyfuse 1 個 / pigtail
+過剰な保護回路 (直列抵抗 / polyfuse / TP4057 R30 swap) は **基本不要**. base 負荷に Grove I2C 経由で 600 mA 既に流していて RoverC が動いている以上, 同じ等価負荷を USB-C 経由で追加するだけ. ピグテイルの物理的な耐絶縁を確保するために **半田部に熱収縮 + ホットボンド**で機械保護する方が, polyfuse 入れるより実用的なリスク低減になる.
 
-ピグテイルが運ぶのは **充電電流 (TP4057 が ICHRG=238mA で 1S LiPo を CC-CV)** のみで, run 電流は Grove 経由なので, 各 pigtail に必要な定格は ~250 mA hold / ~500 mA trip:
+### 必要な検証
 
-- 推奨: **MF-R025-2** (秋月電商 30 円, hold 250 mA / trip 500 mA)
-- 取り付け: 100均ケーブルの赤線途中に半田付け + 熱収縮で被覆. SMD なし, カメラ開腹なし
+- **初回充電セッション**: 全カメラ空状態で USB-C pigtail 接続. 30 分間 RoverC Grove 5V を multimeter で連続測定. sag しなければ完了, 以降この件は気にしない. sag (5V → < 4.5V) したら下記の運用ルールに切替
 
-役割: **ピグテイル短絡時の保護**. 平常電流の制限は polyfuse ではできない (応答が遅すぎる) ので, 平常電流を抑えたいなら下の TP4057 R30 mod が必要.
+### sag が出た場合の運用 fallback (zero-mod)
 
-### 段階的検証
+- **充電ローテ運用**: 同時通電する pigtail は 1 本だけ. teleop UI の battery widget で最低電圧のカメラに繋ぎ替え. 走行中は全 pigtail 抜き
+- **オフローバー充電**: pigtail 全廃. セッション前後に各カメラを USB ハブで個別充電. ハード変更ゼロ, 手間は増える
 
-- **Phase 0**: 1 本だけ polyfuse 付き pigtail で接続. RoverC Grove 端を multimeter で電圧測定. sag しないことを確認
-- **Phase 1**: 3 本同時接続 (走行なし idle). 5V sag しないことを確認 (3 × 238 mA = 714 mA constant 流入)
-- **Phase 2**: 走行 + 充電. ここで sag するなら下記運用ルールに切替
+### TP4057 R30 mod (基本は不要だが SMD work 楽しいなら)
 
-### sag 発生時の運用ルール (zero-mod 退避案)
-
-Phase 1 か Phase 2 で sag が出た場合の運用 fallback:
-
-- **充電ローテ運用**: 同時に通電するピグテイルは 1 本だけ. teleop UI の battery widget で電圧の低いカメラを選んで pigtail を差し替え. 走行中は全 pigtail 抜き, 駐機中のみ充電
-- **オフローバー充電**: pigtail 全廃. セッション前に各カメラを USB ハブで個別充電 → セッション中は RoverC + 内蔵 LiPo (140mAh で十数分は持つ) → セッション後にまた充電. ハード変更ゼロ
-
-### TP4057 R30 mod (SMD work 許容できる場合のみ)
-
-平常電流まで抑えたいなら, 各カメラ基板を開けて R30 (5.1 K, ICHRG プログラム抵抗) を 10 K – 15 K に交換すれば 238 mA → 80 – 120 mA に低減. 3 台分でも 240 – 360 mA で boost への負荷が半減し, polyfuse は短絡時の保険としてのみ機能.
-
-ただし 0603 SMD のリワーク (フラックス + 細コテ + 拡大鏡) を伴うので, **polyfuse + 充電ローテ運用で凌げるならこの mod は不要**.
+各カメラ基板を開けて R30 (5.1 K) を 10 K – 15 K に交換すれば ICHRG が 238 mA → 80 – 120 mA に低減. 3 台分でも 240 – 360 mA. **初回充電セッションの sag リスクをほぼゼロにする予防的 mod**だが, 上記の検証で問題が出なければ実施不要.
 
 ---
 
