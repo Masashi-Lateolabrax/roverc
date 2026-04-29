@@ -116,22 +116,53 @@ dynamics の非定常性を避ける、卒研の主旨「再現可能なデー�
 
 ## モータ補正モデル
 
-各輪は 4 相機械 `IDLE → KICK → STEADY → BRAKE → IDLE` を回り、各相の中で
+各輪は 4 相機械 `IDLE → KICK → STEADY → BRAKE → IDLE` を回り、相ごとに：
 
 ```
-p_norm(s, t) = s · f(s, t) + g(s, t)
-out = clamp(p_norm · max_motor)        // I2C 送信値
+KICK    : p = s · f_k(t)         f_k(0)   = 0,        f_k(T_k) = k
+STEADY  : p = k · s
+BRAKE   : p = s_pre · f_b(t)     f_b(0)   = k,        f_b(T_b) = 0
+out     = clamp(p · max_motor)   // I2C 送信値
 ```
 
-を計算する。`s` は per-wheel メカナム混合値の正規化値（`[-1, 1]`）、`t` は
-相相対時刻（秒）。`f` と `g` は 2 変数多項式（次数 ≤ 3 in s and t）で、
-1 セルあたり `4×4 + 4×4 = 32` 自由度。セル数は `4 wheels × 2 dirs × 3 phases = 24`、
-全体で **768 自由度**。
+`s` は per-wheel メカナム混合値の正規化値（`[-1, 1]`）、`s_pre` は
+STEADY → BRAKE 遷移時のスナップショット、`t` は相相対時刻（秒）。
+`k` は per (wheel, dir) の STEADY 利得（モータ強度差を吸収）。
 
-CMA-ES が JSON で永続化される 768 次元ベクトルを最適化する。
-`coefs/identity.json` がスカラ恒等のベースライン
-（KICK/STEADY: `a[0][0]=1`、BRAKE: 全 0）。
+`f_k`、`f_b` は **`[0, T]` 上の偶数次 Lukács 形式 + BRAKE 入力反転**で
+表現し、非負性を区間 `[0, T]` 内に過不足なく構造保証する：
+
+```
+f_k(t) = t² · q_k(t)² + t(T_k − t) · r_k(t)²              on [0, T_k]
+f_b(t) = (T_b−t)² · q_b(T_b−t)² + t(T_b−t) · r_b(T_b−t)²  on [0, T_b]
+```
+
+導出：偶数次 Lukács `f(x) = q(x)² + x(T−x)·r(x)²` に `f(0) = 0` を課すと
+`q(0) = 0` ⇒ `q = x · q̃` ⇒ `f = x² · q̃² + x(T−x) · r²`。BRAKE は入力反転
+`s = T_b − t` で `f̃(0) = 0` の境界に揃え、KICK と同型に扱う。
+
+`q_k`、`r_k`、`q_b`、`r_b` は次数 `m_order − 1`（default 2、`--m-order`
+で 1〜2 可変）の **符号自由**な多項式。`f` 多項式の次数は `2·m_order`
+（default で 4、ファーム `POLY_MAX_ORDER = 5` 内）。境界条件は
+`Q(1) = √(k)/T` という線形制約 1 本ずつに翻訳。
+
+per (wheel, dir) の **自由パラメータ**（CMA-ES 最適化対象）：
+`1 (k) + 2·((m−1) (q free) + m (r free)) = 4·m − 1`。m=2 で **7 / cell ×
+8 cells = 56 次元**。CMA-ES の Hansen λ デフォルトは `4 + ⌊3·ln(56)⌋ = 16`。
+`α`（q の target 正規化）と `β`（r の target 正規化）は無次元化されており、
+identity ベクトルは `[1, 1, 1, 0, 1, 1, 0]`（cell ごと）。
+
+**`[0, T]` 限定の非負性**：以前の `t·g²` 形式は `g²` が `ℝ` 全体で非負を
+要求するため過剰制約だったが、`q² + t(T−t)·r²` 形式は `t(T−t)` 因子が
+区間 `[0, T]` でのみ非負（区間外では負）になり、実必要条件と一致。
+`r` の係数は自由に負を取れる。これにより「立ち上がってから内部で軽く
+だれて再度 k へ戻る」「線形ランプに小さな bulge を加える」型の形状が
+区間内非負を保ったまま表現可能。
+
+`coefs/identity.json` は線形ベースライン：`k = 1`、`q_k = r_k = q_b = r_b
+= √(1)/T` 定数 → `f_k(t) = t/T_k`、`f_b(t) = 1 − t/T_b`。
 
 ```sh
 uv run python scripts/make_identity_coefs.py coefs/identity.json
+uv run python scripts/make_identity_coefs.py coefs/identity_m1.json --m-order 1
 ```
