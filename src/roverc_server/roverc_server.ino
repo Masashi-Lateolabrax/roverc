@@ -26,17 +26,18 @@ static constexpr uint8_t REG_MOTOR = 0x00;
 //   [0..3] IPv4 octets  [4..5] http_port (LE)  [6] camera_ok  [7] wifi_ok
 static constexpr uint8_t CAM_ADDR_LEFT = 0x40;
 static constexpr uint8_t CAM_ADDR_RIGHT = 0x41;
+static constexpr uint8_t CAM_ADDR_FISHEYE = 0x42;
 static constexpr size_t CAM_FRAME_SIZE = 8;
 static constexpr uint32_t CAM_PROBE_INTERVAL_MS = 1000;
 
-// MJPEG send-token broadcast. Alternate a 1-byte write to the two camera
-// slaves at CAM_TOKEN_PERIOD_MS so each camera ends up with ~12 Hz tokens
-// offset by half-period, preventing simultaneous frame transmits that hog
-// 2.4 GHz airtime when both produce a high-entropy JPEG at once.
+// MJPEG send-token broadcast. Round-robin a 1-byte write to the camera
+// slaves at CAM_TOKEN_PERIOD_MS so each camera ends up with ~8 Hz tokens
+// (3-way) offset evenly, preventing simultaneous frame transmits that hog
+// 2.4 GHz airtime when multiple cameras emit a high-entropy JPEG at once.
 static constexpr uint32_t CAM_TOKEN_PERIOD_MS = 42;
 static constexpr uint8_t  CAM_TOKEN_BYTE = 0x01;
 static uint32_t g_next_token_ms = 0;
-static uint8_t  g_token_target = 0;  // 0=left, 1=right
+static uint8_t  g_token_target = 0;  // 0=left, 1=right, 2=fisheye
 
 // 25 Hz binary telemetry push to the last UDP sender (the PC client). 25 Hz
 // is slow enough to coexist with two MJPEG streams on the same 2.4 GHz radio
@@ -160,6 +161,7 @@ static float g_s_norm[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 
 static CameraState g_cam_left = {CAM_ADDR_LEFT};
 static CameraState g_cam_right = {CAM_ADDR_RIGHT};
+static CameraState g_cam_fisheye = {CAM_ADDR_FISHEYE};
 static uint32_t g_next_cam_tick_ms = 0;
 
 static const uint32_t CONTROL_PERIOD_MS = 1000UL / CONTROL_RATE_HZ;
@@ -469,6 +471,7 @@ static void push_camera_state() {
   JsonObject cam = doc["cam"].to<JsonObject>();
   emit_camera(cam, "left", g_cam_left);
   emit_camera(cam, "right", g_cam_right);
+  emit_camera(cam, "fisheye", g_cam_fisheye);
 
   char buf[256];
   size_t n = serializeJson(doc, buf, sizeof(buf));
@@ -744,6 +747,7 @@ void loop() {
     }
     probe_camera(g_cam_left);
     probe_camera(g_cam_right);
+    probe_camera(g_cam_fisheye);
     push_camera_state();
   }
 
@@ -752,9 +756,14 @@ void loop() {
     if (static_cast<int32_t>(now - g_next_token_ms) > 200) {
       g_next_token_ms = now + CAM_TOKEN_PERIOD_MS;  // catch up after a stall
     }
-    uint8_t addr = (g_token_target == 0) ? CAM_ADDR_LEFT : CAM_ADDR_RIGHT;
+    uint8_t addr;
+    switch (g_token_target) {
+      case 0:  addr = CAM_ADDR_LEFT; break;
+      case 1:  addr = CAM_ADDR_RIGHT; break;
+      default: addr = CAM_ADDR_FISHEYE; break;
+    }
     send_camera_token(addr);
-    g_token_target ^= 1;
+    g_token_target = (g_token_target + 1) % 3;
   }
 
   update_lcd();
