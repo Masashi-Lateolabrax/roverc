@@ -10,7 +10,7 @@ PC -> StickC
 - polynomial chunk (binary, magic 0xC0, 56 B): see `coefs.py`
 
 StickC -> PC
-- camera state (JSON, ~1 Hz): {"cam": {"left": {...}|null, "right": {...}|null}}
+- camera state (JSON, ~1 Hz): {"cam": {"left": {...}|null, "right": {...}|null, "fisheye": {...}|null}}
 - telemetry (binary, magic 0xD1, 25 Hz, 69 B): see `telemetry.py`
 
 The receive loop demultiplexes binary telemetry to `on_telemetry` and JSON

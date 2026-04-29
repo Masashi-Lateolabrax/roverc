@@ -13,30 +13,38 @@
 #include "secrets.h"
 
 // I2C wiring on the RoverC HAT bus (StickC Plus2 P1 STICKIO header).
-// SDA = G0 (pin 5), SCL = G26 (pin 3).
+// SDA = G0 (pin 5), SCL = G26 (pin 3). Used for the RoverC motor STM32 and
+// the front stereo Timer Camera Xs (left/right).
 static constexpr int PIN_SDA = 0;
 static constexpr int PIN_SCL = 26;
+// StickC Plus2 Grove port (Port A, side connector). Used for the fisheye
+// Timer Camera F that mounts on the mast where the HAT bus does not reach.
+// SDA = G32, SCL = G33.
+static constexpr int PIN_GROVE_SDA = 32;
+static constexpr int PIN_GROVE_SCL = 33;
 static constexpr uint32_t I2C_HZ = 100000;
 
 static constexpr uint8_t ROVERC_ADDR = 0x38;
 static constexpr uint8_t REG_MOTOR = 0x00;
 
-// Cameras share the RoverC HAT I2C bus as I2C slaves at fixed addresses.
-// The slaves serve an 8-byte status frame on master read:
+// Cameras serve an 8-byte status frame on master read:
 //   [0..3] IPv4 octets  [4..5] http_port (LE)  [6] camera_ok  [7] wifi_ok
+// left/right share the HAT bus with the RoverC. fisheye lives on the
+// independent Grove bus.
 static constexpr uint8_t CAM_ADDR_LEFT = 0x40;
 static constexpr uint8_t CAM_ADDR_RIGHT = 0x41;
+static constexpr uint8_t CAM_ADDR_FISHEYE = 0x42;
 static constexpr size_t CAM_FRAME_SIZE = 8;
 static constexpr uint32_t CAM_PROBE_INTERVAL_MS = 1000;
 
-// MJPEG send-token broadcast. Alternate a 1-byte write to the two camera
-// slaves at CAM_TOKEN_PERIOD_MS so each camera ends up with ~12 Hz tokens
-// offset by half-period, preventing simultaneous frame transmits that hog
-// 2.4 GHz airtime when both produce a high-entropy JPEG at once.
+// MJPEG send-token broadcast. Round-robin a 1-byte write to the camera
+// slaves at CAM_TOKEN_PERIOD_MS so each camera ends up with ~8 Hz tokens
+// (3-way) offset evenly, preventing simultaneous frame transmits that hog
+// 2.4 GHz airtime when multiple cameras emit a high-entropy JPEG at once.
 static constexpr uint32_t CAM_TOKEN_PERIOD_MS = 42;
 static constexpr uint8_t  CAM_TOKEN_BYTE = 0x01;
 static uint32_t g_next_token_ms = 0;
-static uint8_t  g_token_target = 0;  // 0=left, 1=right
+static uint8_t  g_token_target = 0;  // 0=left, 1=right, 2=fisheye
 
 // 25 Hz binary telemetry push to the last UDP sender (the PC client). 25 Hz
 // is slow enough to coexist with two MJPEG streams on the same 2.4 GHz radio
@@ -160,6 +168,7 @@ static float g_s_norm[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 
 static CameraState g_cam_left = {CAM_ADDR_LEFT};
 static CameraState g_cam_right = {CAM_ADDR_RIGHT};
+static CameraState g_cam_fisheye = {CAM_ADDR_FISHEYE};
 static uint32_t g_next_cam_tick_ms = 0;
 
 static const uint32_t CONTROL_PERIOD_MS = 1000UL / CONTROL_RATE_HZ;
@@ -418,10 +427,10 @@ static void recover_i2c_bus() {
   Serial.println("I2C bus reset (with clock pulses)");
 }
 
-static void probe_camera(CameraState &c) {
-  uint8_t got = Wire.requestFrom((int)c.addr, (int)CAM_FRAME_SIZE);
+static void probe_camera(CameraState &c, TwoWire &bus, bool count_recovery) {
+  uint8_t got = bus.requestFrom((int)c.addr, (int)CAM_FRAME_SIZE);
   if (got != CAM_FRAME_SIZE) {
-    while (Wire.available()) Wire.read();   // drain partial
+    while (bus.available()) bus.read();   // drain partial
     // Only count toward bus-recovery when the slave was at least *transiently*
     // active recently. A camera that has been missing for many probes already
     // is "established absent" -- continuing to count it would trigger endless
@@ -431,11 +440,11 @@ static void probe_camera(CameraState &c) {
     if (c.fail_streak >= MARK_NOT_PRESENT_AFTER) {
       c.present = false;
     }
-    if (was_active) g_probe_fails_since_last_ok++;
+    if (was_active && count_recovery) g_probe_fails_since_last_ok++;
     return;
   }
   uint8_t buf[CAM_FRAME_SIZE] = {0};
-  for (size_t i = 0; i < CAM_FRAME_SIZE; ++i) buf[i] = Wire.read();
+  for (size_t i = 0; i < CAM_FRAME_SIZE; ++i) buf[i] = bus.read();
   c.fail_streak = 0;
   c.present = true;
   c.last_seen_ms = millis();
@@ -446,7 +455,7 @@ static void probe_camera(CameraState &c) {
   c.http_port = (uint16_t)buf[4] | ((uint16_t)buf[5] << 8);
   c.camera_ok = buf[6] != 0;
   c.wifi_ok = buf[7] != 0;
-  g_probe_fails_since_last_ok = 0;
+  if (count_recovery) g_probe_fails_since_last_ok = 0;
 }
 
 static void emit_camera(JsonObject &cam, const char *role, const CameraState &c) {
@@ -469,6 +478,7 @@ static void push_camera_state() {
   JsonObject cam = doc["cam"].to<JsonObject>();
   emit_camera(cam, "left", g_cam_left);
   emit_camera(cam, "right", g_cam_right);
+  emit_camera(cam, "fisheye", g_cam_fisheye);
 
   char buf[256];
   size_t n = serializeJson(doc, buf, sizeof(buf));
@@ -478,11 +488,11 @@ static void push_camera_state() {
   udp.endPacket();
 }
 
-static void send_camera_token(uint8_t addr) {
-  Wire.beginTransmission((int)addr);
-  Wire.write(CAM_TOKEN_BYTE);
+static void send_camera_token(uint8_t addr, TwoWire &bus) {
+  bus.beginTransmission((int)addr);
+  bus.write(CAM_TOKEN_BYTE);
   // NACK from a missing camera is silently ignored; tokens are best-effort.
-  Wire.endTransmission();
+  bus.endTransmission();
 }
 
 static void send_motors_i2c(const int8_t m[4]) {
@@ -675,6 +685,14 @@ void setup() {
   M5.Display.fillScreen(BLACK);
 
   Wire.begin(PIN_SDA, PIN_SCL, I2C_HZ);
+  // M5Unified may have already claimed I2C1 for Ex_I2C; tear down before
+  // re-pinning to the Grove port pins.
+  Wire1.end();
+  delay(5);
+  bool grove_ok = Wire1.begin(PIN_GROVE_SDA, PIN_GROVE_SCL, I2C_HZ);
+  Serial.printf("Wire1 (Grove) begin sda=%d scl=%d hz=%lu -> %d\n",
+                PIN_GROVE_SDA, PIN_GROVE_SCL, (unsigned long)I2C_HZ,
+                (int)grove_ok);
 
   // Stop motors immediately at boot in case the HAT retained state.
   int8_t zero[4] = {0, 0, 0, 0};
@@ -742,8 +760,9 @@ void loop() {
       recover_i2c_bus();
       g_probe_fails_since_last_ok = 0;
     }
-    probe_camera(g_cam_left);
-    probe_camera(g_cam_right);
+    probe_camera(g_cam_left, Wire, true);
+    probe_camera(g_cam_right, Wire, true);
+    probe_camera(g_cam_fisheye, Wire1, false);
     push_camera_state();
   }
 
@@ -752,9 +771,12 @@ void loop() {
     if (static_cast<int32_t>(now - g_next_token_ms) > 200) {
       g_next_token_ms = now + CAM_TOKEN_PERIOD_MS;  // catch up after a stall
     }
-    uint8_t addr = (g_token_target == 0) ? CAM_ADDR_LEFT : CAM_ADDR_RIGHT;
-    send_camera_token(addr);
-    g_token_target ^= 1;
+    switch (g_token_target) {
+      case 0:  send_camera_token(CAM_ADDR_LEFT, Wire); break;
+      case 1:  send_camera_token(CAM_ADDR_RIGHT, Wire); break;
+      default: send_camera_token(CAM_ADDR_FISHEYE, Wire1); break;
+    }
+    g_token_target = (g_token_target + 1) % 3;
   }
 
   update_lcd();

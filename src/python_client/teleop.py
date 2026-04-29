@@ -51,8 +51,11 @@ TRIM_GRID_POS = {
 INPUT_SIZE = (600, 320)
 SETTINGS_SIZE = (820, 600)
 CAMERA_VIEW_SIZE = (320, 240)
-CAMERA_SIZE = (CAMERA_VIEW_SIZE[0] * 2 + 48, CAMERA_VIEW_SIZE[1] + 96)
-CAMERA_ROLES = ("left", "right")
+CAMERA_ROLES = ("left", "right", "fisheye")
+CAMERA_SIZE = (
+    CAMERA_VIEW_SIZE[0] * len(CAMERA_ROLES) + 16 * (len(CAMERA_ROLES) + 1) + 16,
+    CAMERA_VIEW_SIZE[1] + 96,
+)
 
 G_TO_MPS2 = 9.80665
 # Maximum estimated speed used to scale the est-velocity vector to half the HUD.
@@ -403,13 +406,15 @@ def render_cameras(
     s = panel.surface
     s.fill((20, 20, 28))
 
-    panel_w = (CAMERA_SIZE[0] - 48) // 2
     margin = 16
     y = 16
     panel_h = CAMERA_SIZE[1] - 32
+    panel_w = (CAMERA_SIZE[0] - margin * (len(CAMERA_ROLES) + 1)) // len(CAMERA_ROLES)
     panels = {
-        "left":  pygame.Rect(margin, y, panel_w, panel_h),
-        "right": pygame.Rect(margin + panel_w + 16, y, panel_w, panel_h),
+        role: pygame.Rect(
+            margin + (panel_w + margin) * i, y, panel_w, panel_h,
+        )
+        for i, role in enumerate(CAMERA_ROLES)
     }
 
     for role in CAMERA_ROLES:
