@@ -184,27 +184,47 @@
         │                                       ▼
         │                               3V3 LDO → ESP32 / OV3660
         │
-        └─[未配線: USB-C pigtail]─► 各カメラ USB-C VBUS
+        └─[USB-C pigtail]─► 各カメラ USB-C VBUS (= VUSB_VCC)
                                        │
-                                       ▼
-                                  TP4057 充電 IC (VCC=VUSB_VCC, USB のみ)
-                                       │
-                                       ▼
-                                   J4 内蔵 LiPo (140mAh)
-                                       │
-                                       └─ D6 (1N5819) ─► VSYS_VIN
+                              ┌────────┴────────┐
+                              ▼                 ▼
+                         TP4057 VCC         D8 (1N5819)
+                         (USB のみ)              │
+                              │                  ▼
+                          BAT ピン        VSYS_VIN ──► 3V3 LDO ──► ESP32 / OV3660
+                              │                  ▲
+                              ▼                  │
+                          VBAT_IN ◄── J4 内蔵 LiPo (140mAh)
+                              │
+                       FET3 (PMOS) ◄─ POWER_HOLD (GPIO 33 = HIGH で ON)
+                              │
+                              ▼
+                            VBAT ──┬── D6 (1N5819) ──► VSYS_VIN
+                                   │
+                                   └── R28 (1.37K) ─ GPIO 38 ADC ─ R29 (2.67K) ─ GND
+                                                    (V_GPIO38 / VBAT = 0.661)
 ```
 
 ### Battery sharing / fallback の性質
 
-各カメラの VSYS_VIN は **D6 (LiPo→VSYS) と D8 (USB-C→VSYS) の schottky OR** で食わされている. これにより:
+各カメラの VSYS_VIN は **D6 (VBAT→VSYS) と D8 (USB-C→VSYS) の schottky OR** で食わされている. これにより:
 
-- **RoverC が生きている間**: Grove 5V (および将来の USB-C pigtail) が VSYS_VIN を駆動. 内蔵 LiPo は使われず, USB-C 経由なら同時に充電される
-- **RoverC が落ちた瞬間**: VSYS_VIN が 5V → 0V に向かう途中で D6 が導通開始 → カメラは内蔵 LiPo (140mAh) で動き続ける. 数秒〜数分の延命
+- **RoverC が生きている間**: Grove 5V (および将来の USB-C pigtail) が VSYS_VIN を駆動. 内蔵 LiPo は使われず, USB-C 経由なら同時に TP4057 が充電
+- **RoverC が落ちた瞬間**: VSYS_VIN が 5V → 0V に向かう途中で D6 が導通開始 → カメラは内蔵 LiPo (140mAh) 経由で動き続ける. 数秒〜数分の延命 (FET3 が ON なら)
 
 StickC Plus2 も同様に AXP192 が「外部給電 (= HAT 5V) > 電池電圧」のとき自動切替するので, RoverC が落ちても StickC は内蔵 200mAh LiPo で生き残る.
 
 つまり **RoverC = 主電源 + 各小電池に充電を流す親, 子はそれぞれ内蔵電池で短時間 graceful degrade** という構造が**ハードレベルで既に成立している**. これを teleop UI で可視化したのが PR #18 の battery strip + RoverC `isCharging` proxy. RoverC が落ちると `isCharging=False` → "DYING" 表示 → 操縦者は数十秒内に安全停止判断ができる.
+
+### POWER_HOLD (GPIO 33) を起動時に HIGH にする必要
+
+カメラの battery sense (R28/R29 分圧) の入力は **VBAT (FET3 の下流)** で, **VBAT_IN (J4 直結) ではない**. そのため:
+
+- **POWER_HOLD が LOW のまま** → FET3 OFF → VBAT 浮遊 → 分圧器の入力なし → ADC は ~140 mV の floor で saturate (= UI 上 0.28V 固定で全く動かない)
+- **POWER_HOLD HIGH** → FET3 ON → VBAT = VBAT_IN ≈ 電池電圧 → ADC が正しく分圧電圧を検出
+- カメラ自体は Grove HAT 5V から VSYS_VIN 経由で動くので, POWER_HOLD を触らなくても普通に動作する → **動作上は気付きにくいバグ**
+
+PR #22 で `pinMode(33, OUTPUT); digitalWrite(33, HIGH);` を `camera_main_setup` 冒頭に追加して修正済 (M5Stack 公式 `Power_Class::begin()` の初期化順と一致). 「未配線: USB-C pigtail」だった頃の vbat_mv が 3 機とも 0.28V 固定だったのは pigtail / 充電状態とは無関係で, 単にこの初期化漏れが原因.
 
 ### 電流予算
 
