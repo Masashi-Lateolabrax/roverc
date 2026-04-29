@@ -126,6 +126,8 @@ static void make_device_id(const char *role) {
 
 static bool connect_wifi(uint32_t timeout_ms) {
   WiFi.mode(WIFI_STA);
+  WiFi.persistent(true);
+  WiFi.setAutoReconnect(true);
   WiFi.begin(g_cfg.wifi_ssid, g_cfg.wifi_password);
   Serial.printf("WiFi: connecting to %s\n", g_cfg.wifi_ssid);
   uint32_t start = millis();

@@ -174,6 +174,13 @@ static uint32_t g_next_cam_tick_ms = 0;
 static const uint32_t CONTROL_PERIOD_MS = 1000UL / CONTROL_RATE_HZ;
 static uint32_t g_next_tick_ms = 0;
 static uint32_t g_next_lcd_ms = 0;
+// WiFi auto-reconnect: every WIFI_CHECK_INTERVAL_MS, if WL_CONNECTED is
+// lost we re-run connect_wifi(). The ESP32 stack's setAutoReconnect()
+// covers the common transient drop case; this is a backstop for the
+// cases where auto-reconnect itself stalls (channel change, AP reboot,
+// DHCP lease loss).
+static constexpr uint32_t WIFI_CHECK_INTERVAL_MS = 5000;
+static uint32_t g_next_wifi_check_ms = 0;
 
 static int8_t clamp_int8(int v) {
   if (v > 127) return 127;
@@ -511,6 +518,8 @@ static void connect_wifi() {
   M5.Display.printf("WiFi:\n%s\n", WIFI_SSID);
 
   WiFi.mode(WIFI_STA);
+  WiFi.persistent(true);
+  WiFi.setAutoReconnect(true);
   WiFi.disconnect(true, true);
   delay(100);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
@@ -752,6 +761,14 @@ void loop() {
       g_next_tel_ms = now + TEL_PERIOD_MS;  // catch up after a stall
     }
     push_telemetry();
+  }
+
+  if (static_cast<int32_t>(now - g_next_wifi_check_ms) >= 0) {
+    g_next_wifi_check_ms = now + WIFI_CHECK_INTERVAL_MS;
+    if (WiFi.status() != WL_CONNECTED) {
+      Serial.println("WiFi dropped, reconnecting");
+      connect_wifi();
+    }
   }
 
   if (static_cast<int32_t>(now - g_next_cam_tick_ms) >= 0) {
