@@ -59,11 +59,16 @@ static uint8_t addr_for_role(const char *role) {
 static constexpr size_t I2C_RESPONSE_SIZE = 10;
 static volatile uint8_t g_i2c_response[I2C_RESPONSE_SIZE] = {0};
 
-// Timer Camera X / F battery sense pin. The on-board divider halves the
-// JST-PH battery voltage onto GPIO 38 (ADC1_CH2). M5Stack's
-// `battery_voltage` example uses analogRead(38); we use the
-// mV-calibrated `analogReadMilliVolts` and multiply by 2.
+// Timer Camera X / F battery sense pin. The on-board divider drops VBAT_IN
+// onto GPIO 38 (ADC1_CH2) via R28 = 1.37K (top, VBAT side) and R29 = 2.67K
+// (bottom, GND side). Per M5Stack's official Sch_M5TimerCAM.pdf the ratio
+// is V_GPIO38 / V_BAT = R29 / (R28+R29) = 2.67 / 4.04 = 0.661, so the
+// recovery multiplier is (R28+R29)/R29 = 4.04/2.67 = 1.513x. The earlier
+// "1:1 divider, x2" code path overestimated by ~32% when a battery was
+// present. Done as integer math: mv * 404 / 267.
 static constexpr int BAT_ADC_PIN = 38;
+static constexpr uint32_t BAT_DIV_NUM = 404;
+static constexpr uint32_t BAT_DIV_DEN = 267;
 
 static CameraConfig g_cfg = {};
 static WiFiUDP g_udp;
@@ -478,7 +483,7 @@ static void update_i2c_response() {
   IPAddress ip = WiFi.localIP();
   bool wifi_ok = WiFi.status() == WL_CONNECTED;
   uint32_t mv_pin = analogReadMilliVolts(BAT_ADC_PIN);
-  uint32_t vbat_mv = mv_pin * 2;  // 1:1 on-board divider
+  uint32_t vbat_mv = mv_pin * BAT_DIV_NUM / BAT_DIV_DEN;
   if (vbat_mv > 0xFFFF) vbat_mv = 0xFFFF;
   noInterrupts();
   g_i2c_response[0] = ip[0];
