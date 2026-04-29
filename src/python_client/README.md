@@ -12,7 +12,7 @@ PC 側コード。ユーザ向けの起動・運用手順は **トップレベ�
 | `roverc.py` | `RoverCClient`（UDP socket、JSON / binary 多重化、telemetry rx loop） |
 | `camera.py` | `CameraRegistry` + `CameraStream`（HTTP MJPEG 受信） |
 | `coefs.py` | 多項式係数の dataclass、JSON I/O、binary chunk encoder、CMA-ES vector pack/unpack |
-| `telemetry.py` | 0xD1 packet パーサ + thread-safe ring buffer |
+| `telemetry.py` | 0xD2 packet パーサ + thread-safe ring buffer |
 | `widgets.py` | pygame の Slider / Button / ChoiceRow |
 
 ## 依存関係
@@ -82,10 +82,10 @@ PC ↔ StickC は単一 UDP ポート（既定 4210）で 4 種多重化。
 ファーム I2C プローブが拾った左右カメラの IP / port / `camera_ok` を伝搬。
 `null` は不在。
 
-#### telemetry（binary 69 B, 25 Hz when `cfg.tel = true`）
+#### telemetry（binary 73 B, 25 Hz when `cfg.tel = true`）
 
 ```
-[0]       magic 0xD1
+[0]       magic 0xD2
 [1..4]    uint32 LE  millis()                     -> fw_t_ms
 [5..8]    float       gx_dps      (raw gyro X, deg/s)
 [9..12]   float       gy_dps      (raw gyro Y, deg/s)
@@ -97,6 +97,9 @@ PC ↔ StickC は単一 UDP ポート（既定 4210）で 4 種多重化。
 [33..48]  float[4]    s_pre       (BRAKE-entry snapshot of normalised s)
 [49..52]  int8[4]     motor       (commanded I2C value)
 [53..68]  float[4]    s_norm      (current-tick normalised m_i, ∈ [-1, 1])
+[69..70]  uint16 LE   vbat_mv     (StickC battery voltage, mV)
+[71]      uint8       bat_pct     (0..100; 0xFF = unknown)
+[72]      uint8       charging    (0=no, 1=yes; 0xFF = unknown)
 ```
 
 `telemetry.parse(raw)` → `TelemetryPacket`（`pc_t` は受信時の `time.monotonic()`）。

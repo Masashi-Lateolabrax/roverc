@@ -46,7 +46,7 @@ static uint8_t  g_token_target = 0;  // 0=left, 1=right, 2=fisheye
 // without obvious airtime contention. Disabled by default; PC opts in via
 // `cfg.tel = true`.
 static constexpr uint32_t TEL_PERIOD_MS = 40;
-static constexpr uint8_t  TEL_MAGIC = 0xD1;
+static constexpr uint8_t  TEL_MAGIC = 0xD2;
 static uint32_t g_next_tel_ms = 0;
 
 // Binary polynomial-coefficient packet format (sent as its own UDP datagram,
@@ -350,8 +350,8 @@ static void compute_motors(float vx, float vy, float wz, uint32_t now, int8_t ou
   }
 }
 
-// Telemetry binary packet (69 bytes total, magic 0xD1):
-//   [0]      0xD1
+// Telemetry binary packet (73 bytes total, magic 0xD2):
+//   [0]      0xD2
 //   [1..4]   uint32 LE  millis()
 //   [5..8]   float       gx_dps   (raw gyro X, deg/s; PC subtracts bias)
 //   [9..12]  float       gy_dps   (raw gyro Y, deg/s)
@@ -363,6 +363,9 @@ static void compute_motors(float vx, float vy, float wz, uint32_t now, int8_t ou
 //   [33..48] float[4]    s_pre    (normalized BRAKE snapshot per wheel)
 //   [49..52] int8[4]     motor    (commanded I2C value)
 //   [53..68] float[4]    s_norm   (current-tick normalized s, ∈ [-1, 1])
+//   [69..70] uint16 LE   vbat_mv  (StickC battery voltage, mV)
+//   [71]     uint8       bat_pct  (0..100; 0xFF if unknown)
+//   [72]     uint8       charging (0=no, 1=yes; 0xFF if unknown)
 static void push_telemetry() {
   if (!g_cfg.tel_en) return;
   if (g_last_sender == IPAddress(0, 0, 0, 0) || g_last_sender_port == 0) return;
@@ -396,6 +399,16 @@ static void push_telemetry() {
   for (int i = 0; i < 4; ++i) {
     memcpy(buf + off, &g_s_norm[i], 4); off += 4;
   }
+
+  int bat_mv_i = M5.Power.getBatteryVoltage();
+  int bat_pct_i = M5.Power.getBatteryLevel();
+  int charging_i = M5.Power.isCharging();
+  uint16_t vbat_mv = (bat_mv_i < 0) ? 0 : (bat_mv_i > 0xFFFF ? 0xFFFF : (uint16_t)bat_mv_i);
+  uint8_t bat_pct = (bat_pct_i < 0 || bat_pct_i > 100) ? 0xFF : (uint8_t)bat_pct_i;
+  uint8_t charging = (charging_i < 0) ? 0xFF : (charging_i ? 1 : 0);
+  memcpy(buf + off, &vbat_mv, 2); off += 2;
+  buf[off++] = bat_pct;
+  buf[off++] = charging;
 
   udp.beginPacket(g_last_sender, g_last_sender_port);
   udp.write(buf, off);
