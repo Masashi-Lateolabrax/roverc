@@ -43,6 +43,16 @@ static constexpr int I2C_SCL_PIN = 13;
 static constexpr uint32_t I2C_FREQ = 100000;
 static constexpr uint8_t I2C_ADDR_LEFT = 0x40;
 static constexpr uint8_t I2C_ADDR_RIGHT = 0x41;
+static constexpr uint8_t I2C_ADDR_FISHEYE = 0x42;
+
+// Map role string to the I2C slave address. Unknown roles fall back to RIGHT
+// to preserve the historical default (the codebase had only "left" / "right"
+// before fisheye was added).
+static uint8_t addr_for_role(const char *role) {
+  if (strcmp(role, "left") == 0) return I2C_ADDR_LEFT;
+  if (strcmp(role, "fisheye") == 0) return I2C_ADDR_FISHEYE;
+  return I2C_ADDR_RIGHT;
+}
 // Slave response frame layout (8 bytes), read by the StickC master:
 //   [0..3] IPv4 octets   [4..5] http_port (LE)   [6] camera_ok   [7] wifi_ok
 static constexpr size_t I2C_RESPONSE_SIZE = 8;
@@ -253,7 +263,7 @@ static bool camera_reinit(framesize_t fs, int quality) {
   // wait the 10s heal timeout after a framesize change.
   Wire1.end();
   delay(5);
-  uint8_t addr = (strcmp(g_cfg.role, "left") == 0) ? I2C_ADDR_LEFT : I2C_ADDR_RIGHT;
+  uint8_t addr = addr_for_role(g_cfg.role);
   if (Wire1.begin(addr, I2C_SDA_PIN, I2C_SCL_PIN, I2C_FREQ)) {
     Wire1.onRequest(on_i2c_request);
     Wire1.onReceive(on_i2c_receive);
@@ -491,7 +501,7 @@ static void check_i2c_slave_health() {
   Serial.println("i2c slave: no master requests in 10s, reinitialising Wire1");
   Wire1.end();
   delay(10);
-  uint8_t addr = (strcmp(g_cfg.role, "left") == 0) ? I2C_ADDR_LEFT : I2C_ADDR_RIGHT;
+  uint8_t addr = addr_for_role(g_cfg.role);
   if (!Wire1.begin(addr, I2C_SDA_PIN, I2C_SCL_PIN, I2C_FREQ)) {
     Serial.printf("Wire1 reinit failed (addr=0x%02x)\n", addr);
   } else {
@@ -503,7 +513,7 @@ static void check_i2c_slave_health() {
 }
 
 static void i2c_slave_init(const char *role) {
-  uint8_t addr = (strcmp(role, "left") == 0) ? I2C_ADDR_LEFT : I2C_ADDR_RIGHT;
+  uint8_t addr = addr_for_role(role);
   if (!Wire1.begin((uint8_t)addr, I2C_SDA_PIN, I2C_SCL_PIN, I2C_FREQ)) {
     Serial.printf("Wire1 slave init failed (addr=0x%02x)\n", addr);
     return;
