@@ -75,12 +75,14 @@ PC ↔ StickC は単一 UDP ポート（既定 4210）で 4 種多重化。
 #### camera state（JSON, ~1 Hz）
 
 ```json
-{"cam": {"left":  {"ip": "192.168.1.42", "port": 80, "ok": true},
-         "right": {"ip": "192.168.1.43", "port": 80, "ok": true}}}
+{"cam": {"left":  {"ip": "192.168.1.42", "port": 80, "ok": true, "vbat_mv": 4123},
+         "right": {"ip": "192.168.1.43", "port": 80, "ok": true, "vbat_mv": 4087},
+         "fisheye": {"ip": "192.168.1.44", "port": 80, "ok": true, "vbat_mv": 4051}}}
 ```
 
-ファーム I2C プローブが拾った左右カメラの IP / port / `camera_ok` を伝搬。
-`null` は不在。
+ファーム I2C プローブが拾ったカメラの IP / port / `camera_ok` /
+`vbat_mv`（カメラ側 `analogReadMilliVolts(38) * 2`、JST-PH 端電圧 mV）
+を伝搬。`null` は不在。
 
 #### telemetry（binary 73 B, 25 Hz when `cfg.tel = true`）
 

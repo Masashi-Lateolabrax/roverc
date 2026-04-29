@@ -49,6 +49,7 @@ class CameraInfo:
     jpg_path: str
     camera_ok: bool
     last_seen_monotonic: float
+    vbat_mv: int | None  # battery voltage at the camera, mV; None if unknown
 
 
 class CameraRegistry:
@@ -63,6 +64,7 @@ class CameraRegistry:
         http_port: int,
         camera_ok: bool,
         jpg_path: str = "/stream",
+        vbat_mv: int | None = None,
     ) -> None:
         info = CameraInfo(
             role=role,
@@ -71,6 +73,7 @@ class CameraRegistry:
             jpg_path=jpg_path,
             camera_ok=camera_ok,
             last_seen_monotonic=time.monotonic(),
+            vbat_mv=vbat_mv,
         )
         with self._lock:
             self._by_role[role] = info
