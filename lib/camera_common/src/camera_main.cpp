@@ -477,9 +477,23 @@ static void handle_stream() {
 static void update_i2c_response() {
   IPAddress ip = WiFi.localIP();
   bool wifi_ok = WiFi.status() == WL_CONNECTED;
-  uint32_t mv_pin = analogReadMilliVolts(BAT_ADC_PIN);
-  uint32_t vbat_mv = mv_pin * 2;  // 1:1 on-board divider
+  // Take 8 ADC samples and average them to suppress jitter, and dump the
+  // raw + averaged + final mV over Serial so we can see whether the chip is
+  // actually responding to USB-C VBUS (and rule out any pipeline caching).
+  uint32_t adc_sum = 0;
+  uint32_t adc_min = 0xFFFFFFFFu, adc_max = 0;
+  for (int i = 0; i < 8; ++i) {
+    uint32_t s = analogReadMilliVolts(BAT_ADC_PIN);
+    adc_sum += s;
+    if (s < adc_min) adc_min = s;
+    if (s > adc_max) adc_max = s;
+  }
+  uint32_t mv_pin = adc_sum / 8;
+  uint32_t vbat_mv = mv_pin * 2;  // 1:1 on-board divider (bug, fixed in PR #19)
   if (vbat_mv > 0xFFFF) vbat_mv = 0xFFFF;
+  Serial.printf("vbat dbg: pin avg=%u mV (min=%u max=%u, n=8) -> vbat_mv=%u\n",
+                (unsigned)mv_pin, (unsigned)adc_min,
+                (unsigned)adc_max, (unsigned)vbat_mv);
   noInterrupts();
   g_i2c_response[0] = ip[0];
   g_i2c_response[1] = ip[1];
