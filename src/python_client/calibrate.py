@@ -31,6 +31,8 @@ import cma  # type: ignore[import-not-found]
 import numpy as np
 
 from coefs import (
+    DEFAULT_M_ORDER,
+    M_MAX_ORDER,
     CoefSet,
     coefs_to_vector,
     load_json,
@@ -189,12 +191,23 @@ def main() -> int:
                     help="JSON path where the running best coefficient set is saved.")
     ap.add_argument("--init-coefs", type=Path, default=None,
                     help="Seed CMA-ES from this JSON instead of identity defaults.")
+    ap.add_argument("--m-order", type=int, default=DEFAULT_M_ORDER,
+                    help=f"Half the f-polynomial degree in the even-Lukács "
+                         f"motor model: f_k = t²·q_k² + t(T_k−t)·r_k² has "
+                         f"degree 2·m_order. q and r are degree m_order−1 "
+                         f"polynomials. Default {DEFAULT_M_ORDER} (f degree "
+                         f"4), max {M_MAX_ORDER}. Ignored if --init-coefs is "
+                         "provided (the JSON's m_order wins to keep CMA-ES "
+                         "dimensions consistent).")
     ap.add_argument("--pop-size", type=int, default=None,
                     help="CMA-ES population size lambda. Defaults to Hansen's "
                          "heuristic 4 + floor(3 * ln(n)) where n is the "
                          "coefficient vector dimension.")
-    ap.add_argument("--sigma", type=float, default=0.05,
-                    help="CMA-ES initial step. 0.05 keeps early candidates close to identity.")
+    ap.add_argument("--sigma", type=float, default=0.1,
+                    help="CMA-ES initial step. The α/β coordinates are "
+                         "dimensionless (target-normalised) so 0.1 is a "
+                         "moderate exploratory step around the identity "
+                         "vector [1, 1, 0, ...].")
     ap.add_argument("--n-trials", type=int, default=8,
                     help="Trials per candidate. Defaults to 8 = 4 direction "
                          "patterns x 2 cycles.")
@@ -212,6 +225,8 @@ def main() -> int:
             "previous calibration result. Pick a new path, or pass the existing "
             "file via --init-coefs and write to a fresh --out."
         )
+    if not (1 <= args.m_order <= M_MAX_ORDER):
+        ap.error(f"--m-order must be in [1, {M_MAX_ORDER}]")
 
     logging.basicConfig(
         level=args.log_level.upper(),
@@ -221,7 +236,11 @@ def main() -> int:
 
     rng = random.Random(args.seed)
 
-    template = load_json(args.init_coefs) if args.init_coefs else make_identity()
+    template = (
+        load_json(args.init_coefs)
+        if args.init_coefs
+        else make_identity(m_order=args.m_order)
+    )
 
     queue = TelemetryQueue(maxlen=20000)
     client = RoverCClient(args.host, args.port, on_telemetry=queue.on_packet)

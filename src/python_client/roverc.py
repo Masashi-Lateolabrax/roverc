@@ -7,7 +7,7 @@ PC -> StickC
 - config packet (JSON): {"cfg": {"mx": ..., "kdur": ..., "bdur": ...,
                                 "tel": ..., "tf": [...], "tb": [...],
                                 "kf": [...], "kb": [...]}}
-- polynomial chunk (binary, magic 0xC0, 132 B): see `coefs.py`
+- polynomial chunk (binary, magic 0xC0, 56 B): see `coefs.py`
 
 StickC -> PC
 - camera state (JSON, ~1 Hz): {"cam": {"left": {...}|null, "right": {...}|null}}
@@ -88,7 +88,8 @@ class RoverCClient:
             self._sock.sendto(pkt, self._addr)
 
     def send_poly_chunk(self, buf: bytes) -> None:
-        """One 132-byte 0xC0 polynomial chunk (built by coefs.chunk_bytes)."""
+        """One 0xC0 polynomial chunk per (wheel, dir), built by
+        `coefs.chunk_bytes` (currently 56 bytes)."""
         self._sock.sendto(buf, self._addr)
 
     def send_stop(self, repeat: int = 3, delay_s: float = 0.02) -> None:
