@@ -137,7 +137,7 @@
 | デバイス | 取得経路 | 値 |
 |---|---|---|
 | StickC Plus2 | `M5.Power.getBatteryVoltage/Level/isCharging`、25Hz telemetry の trailer に同梱（PR #16, magic 0xD2） | mV / % / charging |
-| 左 / 右 / 魚眼カメラ | カメラ側 `analogReadMilliVolts(38) * 2`（GPIO 38 の 1:1 on-board 分圧）、I2C status frame の `[8..9]` に LE で乗せて StickC が `~1Hz` JSON で PC へ伝搬（PR #17） | mV |
+| 左 / 右 / 魚眼カメラ | カメラ側 `analogReadMilliVolts(38) * (R28+R29)/R29`（R28=1.37K, R29=2.67K → ×1.513、Sch_M5TimerCAM.pdf 参照）、I2C status frame の `[8..9]` に LE で乗せて StickC が `~1Hz` JSON で PC へ伝搬（PR #17, 分圧比 fix は PR #19） | mV |
 | RoverC | **直読み不可**（公式 I2C プロトコルにバッテリレジスタなし、STM32F030 ファームは閉じ／書き換え非実用）。代理として StickC `isCharging` を見る — RoverC が HAT バスに 5V を供給している間 True、バッテリが落ちると 5V が崩れて False に flip する | OK / DYING |
 
 ### RoverC proxy の信頼境界
@@ -154,6 +154,106 @@
 - StickC %: ≥ 30 GREEN / 10–30 YELLOW / < 10 RED
 - カメラ mV: ≥ 3800 GREEN / 3500–3800 YELLOW / < 3500 RED（1S Li-ion 想定で保守的）
 - 値が読めない / probe 未着 → グレー "—"
+
+---
+
+## 電力 topology
+
+各デバイスは独立して電池を持っているが, 配線で繋がる結果として **schottky-OR されたシステム** になる. 設計意図としての power flow は以下:
+
+```
+ RoverC 16340 (700mAh)
+        │
+        ▼
+   boost converter (5V, 容量未公表 ≦ ~2A 推定)
+        │
+        ├── HAT 8-pin (G26/G0/5V/GND) ─────► StickC Plus2
+        │                                         │ (AXP192 が 5V→電池充電)
+        │                                         └─ 内蔵 200mAh LiPo
+        │
+        ├── Grove I2C① (SCL/SDA/5V/GND) ──┐
+        │                                  │ 3-way 分岐
+        ├── Grove I2C② (SCL/SDA/5V/GND) ──┤  (現状は I2C① 1ヶ所からハンダ splice)
+        │                                  │
+        ├── Servo S1/V/G (Pro 専用)         │
+        ├── Servo S2/V/G (Pro 専用)         │
+        │                                  ▼
+        │                          各 Timer Camera X / F の Grove (HY2.0)
+        │                              5V → VSYS_VIN (D8 を介さない直結)
+        │                                       │
+        │                                       ▼
+        │                               3V3 LDO → ESP32 / OV3660
+        │
+        └─[未配線: USB-C pigtail]─► 各カメラ USB-C VBUS
+                                       │
+                                       ▼
+                                  TP4057 充電 IC (VCC=VUSB_VCC, USB のみ)
+                                       │
+                                       ▼
+                                   J4 内蔵 LiPo (140mAh)
+                                       │
+                                       └─ D6 (1N5819) ─► VSYS_VIN
+```
+
+### Battery sharing / fallback の性質
+
+各カメラの VSYS_VIN は **D6 (LiPo→VSYS) と D8 (USB-C→VSYS) の schottky OR** で食わされている. これにより:
+
+- **RoverC が生きている間**: Grove 5V (および将来の USB-C pigtail) が VSYS_VIN を駆動. 内蔵 LiPo は使われず, USB-C 経由なら同時に充電される
+- **RoverC が落ちた瞬間**: VSYS_VIN が 5V → 0V に向かう途中で D6 が導通開始 → カメラは内蔵 LiPo (140mAh) で動き続ける. 数秒〜数分の延命
+
+StickC Plus2 も同様に AXP192 が「外部給電 (= HAT 5V) > 電池電圧」のとき自動切替するので, RoverC が落ちても StickC は内蔵 200mAh LiPo で生き残る.
+
+つまり **RoverC = 主電源 + 各小電池に充電を流す親, 子はそれぞれ内蔵電池で短時間 graceful degrade** という構造が**ハードレベルで既に成立している**. これを teleop UI で可視化したのが PR #18 の battery strip + RoverC `isCharging` proxy. RoverC が落ちると `isCharging=False` → "DYING" 表示 → 操縦者は数十秒内に安全停止判断ができる.
+
+### 電流予算
+
+公式データシートに RoverC の boost 出力電流仕様の記載なし. ただし M5 が 2 つの Grove I2C ポートを「expansion module 用」と明示している以上, base 負荷 (motors + StickC) + 数百 mA の expansion 余裕は specced されているはず.
+
+連続電流の試算 (推測, ±20%):
+
+| 負荷 | 連続値 |
+|---|---|
+| 4 N20 モータ 中速 | ~400 mA |
+| 3 カメラ VSYS run | ~600 mA |
+| StickC | ~80 mA |
+| **base 合計** | **~1.1 A** |
+| 3 カメラ充電 (CC phase, **初回 ~30 分のみ**) | +714 mA |
+
+motor stall (4 A peak, 数十 ms transient) は出力キャパで吸収される領域なので連続電流の議論からは除外.
+
+### 充電電流の実態は瞬間的でない
+
+TP4057 は CC-CV 充電で, 「714 mA 連続」状態は **LiPo が空のときの最初 ~30 分だけ**. その後は CV phase で電流が漸減 (238 → 24 mA), 完了後は termination で 24 mA 以下に落ちる. 通常セッション (前回満充電済) では充電電流は数 mA レベル. つまり:
+
+- 初回充電セッション: base 1.1 A + 充電 0.7 A = **1.8 A** (~30 分のみ)
+- 2 セッション目以降: base 1.1 A + 充電 ~0.05 A = **~1.1 A** 平常運用
+
+1〜2 A 級 boost に対して初回はギリギリ, 以降は余裕という見立て.
+
+### USB-C 充電 pigtail mod (採用予定)
+
+カメラの内蔵 LiPo は **TP4057 が VUSB_VCC (USB のみ) からしか充電できない** ため, Grove 5V だけで運用していると毎セッション self-discharge し続ける (issue #12 で 0.28V 観測の主因). mod 内容:
+
+1. 100均の充電専用 USB-C ケーブルを剥いて 5V/GND 2 線を引き出し
+2. RoverC の Grove 5V (or Servo V) から 3-way 分岐
+3. 各カメラの USB-C ポートに食わせる
+4. 内蔵 LiPo が常時充電 + schottky-OR battery sharing topology が機能
+
+過剰な保護回路 (直列抵抗 / polyfuse / TP4057 R30 swap) は **基本不要**. base 負荷に Grove I2C 経由で 600 mA 既に流していて RoverC が動いている以上, 同じ等価負荷を USB-C 経由で追加するだけ. ピグテイルの物理的な耐絶縁を確保するために **半田部に熱収縮 + ホットボンド**で機械保護する方が, polyfuse 入れるより実用的なリスク低減になる.
+
+### 必要な検証
+
+- **初回充電セッション**: 全カメラ空状態で USB-C pigtail 接続. 30 分間 RoverC Grove 5V を multimeter で連続測定. sag しなければ完了, 以降この件は気にしない. sag (5V → < 4.5V) したら下記の運用ルールに切替
+
+### sag が出た場合の運用 fallback (zero-mod)
+
+- **充電ローテ運用**: 同時通電する pigtail は 1 本だけ. teleop UI の battery widget で最低電圧のカメラに繋ぎ替え. 走行中は全 pigtail 抜き
+- **オフローバー充電**: pigtail 全廃. セッション前後に各カメラを USB ハブで個別充電. ハード変更ゼロ, 手間は増える
+
+### TP4057 R30 mod (基本は不要だが SMD work 楽しいなら)
+
+各カメラ基板を開けて R30 (5.1 K) を 10 K – 15 K に交換すれば ICHRG が 238 mA → 80 – 120 mA に低減. 3 台分でも 240 – 360 mA. **初回充電セッションの sag リスクをほぼゼロにする予防的 mod**だが, 上記の検証で問題が出なければ実施不要.
 
 ---
 
