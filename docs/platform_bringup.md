@@ -226,6 +226,20 @@ StickC Plus2 も同様に AXP192 が「外部給電 (= HAT 5V) > 電池電圧」
 
 PR #22 で `pinMode(33, OUTPUT); digitalWrite(33, HIGH);` を `camera_main_setup` 冒頭に追加して修正済 (M5Stack 公式 `Power_Class::begin()` の初期化順と一致). 「未配線: USB-C pigtail」だった頃の vbat_mv が 3 機とも 0.28V 固定だったのは pigtail / 充電状態とは無関係で, 単にこの初期化漏れが原因.
 
+### Grove 5V では LiPo は充電されない (実測確認済 2026-04-30)
+
+回路図トレース上, TP4057 VCC は **VUSB_VCC (USB-C VBUS) 専用ネット**で, Grove HY2.0 5V (VSYS_VIN) とは別ネット. D8 が VUSB_VCC → VSYS_VIN の向きなので Grove 側からは TP4057 入力に逆流しない. つまり **Grove 給電中は LiPo は充電も放電もされず, ただ放置される**.
+
+PR #22 直後に「Grove だけ挿してると vbat ADC が少しずつ上がる」観測があったが, これは充電ではなく **Grove → VSYS_VIN 立ち上がり時に保護網経由で VBAT 節点が緩く引き上げられる過渡現象**. 実測で確定:
+
+1. 全カメラを枯渇 (camera 停止) まで放電
+2. **(a) USB-C 充電器 + Grove 同時挿し → Grove 単独 → 抜き** : vbat 上昇 (TP4057 が USB-C から CC-CV 充電)
+3. **(b) Grove 単独 → 抜き** : vbat 横ばい〜微低下 (LiPo は手付かず, 抜くと D6 フォールバックで放電開始)
+
+→ Grove 5V 経由で LiPo を充電するパスは存在しない. 充電したい場合は USB-C 必須 (= 採用予定の USB-C pigtail mod が前提通り必要).
+
+なお Grove 給電中に LiPo が「使われない (放電もしない)」のは D6 が逆バイアスのため. Grove を抜いた瞬間に D6 が forward して LiPo がカメラを延命する側に切り替わる. 「Grove 抜いてもカメラが動き続ける」は充電の証拠ではなく schottky-OR フォールバックが期待通り動いてる証拠.
+
 ### 電流予算
 
 公式データシートに RoverC の boost 出力電流仕様の記載なし. ただし M5 が 2 つの Grove I2C ポートを「expansion module 用」と明示している以上, base 負荷 (motors + StickC) + 数百 mA の expansion 余裕は specced されているはず.
