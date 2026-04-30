@@ -59,11 +59,33 @@ static uint8_t addr_for_role(const char *role) {
 static constexpr size_t I2C_RESPONSE_SIZE = 10;
 static volatile uint8_t g_i2c_response[I2C_RESPONSE_SIZE] = {0};
 
-// Timer Camera X / F battery sense pin. The on-board divider halves the
-// JST-PH battery voltage onto GPIO 38 (ADC1_CH2). M5Stack's
-// `battery_voltage` example uses analogRead(38); we use the
-// mV-calibrated `analogReadMilliVolts` and multiply by 2.
+// Timer Camera X / F battery sense.
+//
+// Per the official schematic Sch_M5TimerCAM.pdf and M5Stack's official
+// Power_Class.cpp / Power_Class.h:
+//
+//   J4 LiPo --+-- VBAT_IN (battery direct)
+//             +-- TP4057 BAT pin (charger)
+//             +-- FET3 (PMOS) -- VBAT --+-- R28 (1.37K) -- GPIO 38
+//                                       +-- D6 -- VSYS_VIN
+//                                       |
+//                                       +-- R29 (2.67K) -- GND
+//
+// FET3 is the soft-power PMOS gating the battery rail to the system. It is
+// only ON when POWER_HOLD_PIN (GPIO 33) is held HIGH. The divider that the
+// ADC reads is on VBAT (downstream of FET3), NOT on VBAT_IN. So without
+// asserting POWER_HOLD, the divider's input floats and the ADC saturates at
+// its ~140 mV lower-bound noise floor regardless of charger / battery state.
+// The earlier code missed this -- it never drove GPIO 33, so the camera ran
+// fine off Grove HY2.0 5V (which feeds VSYS_VIN directly via D8) but the
+// battery sense was permanently stuck at ~0.28 V (= 140 mV * 2).
+//
+// Divider ratio: 2.67 / (1.37 + 2.67) = 0.661, so VBAT = V_GPIO38 / 0.661.
+// Done as integer math (mv * 404 / 267) to keep the path on int32.
 static constexpr int BAT_ADC_PIN = 38;
+static constexpr int POWER_HOLD_PIN = 33;
+static constexpr uint32_t BAT_DIV_NUM = 404;
+static constexpr uint32_t BAT_DIV_DEN = 267;
 
 static CameraConfig g_cfg = {};
 static WiFiUDP g_udp;
@@ -477,8 +499,15 @@ static void handle_stream() {
 static void update_i2c_response() {
   IPAddress ip = WiFi.localIP();
   bool wifi_ok = WiFi.status() == WL_CONNECTED;
-  uint32_t mv_pin = analogReadMilliVolts(BAT_ADC_PIN);
-  uint32_t vbat_mv = mv_pin * 2;  // 1:1 on-board divider
+  // Take 8 samples and average to suppress single-sample jitter. The
+  // multiplier converts the divider midpoint reading back to VBAT_IN: see
+  // BAT_DIV_NUM / BAT_DIV_DEN comment block.
+  uint32_t adc_sum = 0;
+  for (int i = 0; i < 8; ++i) {
+    adc_sum += analogReadMilliVolts(BAT_ADC_PIN);
+  }
+  uint32_t mv_pin = adc_sum / 8;
+  uint32_t vbat_mv = mv_pin * BAT_DIV_NUM / BAT_DIV_DEN;
   if (vbat_mv > 0xFFFF) vbat_mv = 0xFFFF;
   noInterrupts();
   g_i2c_response[0] = ip[0];
@@ -581,6 +610,17 @@ static void handle_root() {
 void camera_main_setup(const CameraConfig &cfg) {
   Serial.begin(115200);
   delay(100);
+
+  // Drive POWER_HOLD HIGH first so the soft-power PMOS (FET3) latches the
+  // battery rail to the system. Without this:
+  //   - the camera still runs whenever USB or Grove HY2.0 5V is supplying
+  //     VSYS_VIN (so we never noticed in normal use), but
+  //   - the battery-sense divider on VBAT (post-FET3) reads ~0 V and the
+  //     ADC saturates at its ~140 mV floor regardless of charge state.
+  // Matches the M5Stack-official Power_Class::begin() initialisation order.
+  pinMode(POWER_HOLD_PIN, OUTPUT);
+  digitalWrite(POWER_HOLD_PIN, HIGH);
+
   g_cfg = cfg;
   make_device_id(cfg.role);
   esp_reset_reason_t rr = esp_reset_reason();
