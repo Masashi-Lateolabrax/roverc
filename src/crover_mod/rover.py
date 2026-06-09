@@ -17,14 +17,19 @@ frame (or None until one arrives) and lazily opens the stream on first use.
 from __future__ import annotations
 
 import json
+import math
 import socket
 import threading
 import time
 from dataclasses import replace
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from camera import CameraRegistry, CameraStream
 from roverc import RoverCClient
+
+if TYPE_CHECKING:
+    import numpy as np
 
 # repo-root/config.json, resolved relative to this file (src/crover_mod/).
 _DEFAULT_CONFIG = Path(__file__).resolve().parents[2] / "config.json"
@@ -34,10 +39,16 @@ class Rover:
     def __init__(
         self,
         host: str,
+        max_throttle: float,
         port: int = 4210,
         announce_port: int = 4211,
     ) -> None:
         self.host = host
+        # Upper bound on the normalized drive command (throttle) in [0, 1]. This
+        # is NOT a physical velocity: the firmware mecanum-mixes it and scales by
+        # config motor.max_motor to an int8 motor value. Actual m/s is
+        # uncalibrated (depends on battery / surface / load).
+        self.max_throttle = max_throttle
         self.port = port
         self._registry = CameraRegistry()
         self._client = RoverCClient(host, port, camera_registry=self._registry)
@@ -65,12 +76,26 @@ class Rover:
 
     # -- motion ----------------------------------------------------------
 
-    def move(self, vx: float = 0.0, vy: float = 0.0, wz: float = 0.0) -> None:
-        """Set the motion setpoint and return immediately. The rover holds it
-        (a background thread keeps resending) until the next move()/stop().
-        vx forward, vy strafe-left, wz CCW yaw."""
+    def move(self, direction: tuple[float, float] | np.ndarray) -> None:
+        """Translate along `direction = (x, y)` (x forward, y strafe-left),
+        given as a 2-tuple or a length-2 numpy array. Its length is the throttle
+        fraction (clamped to 1); the heading is scaled by max_throttle. Returns
+        immediately; the setpoint is held (and resent) until the next
+        move()/turn()/stop()."""
+        vx, vy = float(direction[0]), float(direction[1])
+        norm = math.hypot(vx, vy)
+        if norm > 1.0:
+            vx, vy = vx / norm, vy / norm
         with self._target_lock:
-            self._target = (vx, vy, wz)
+            self._target = (vx * self.max_throttle, vy * self.max_throttle, 0.0)
+
+    def turn(self, yaw: float) -> None:
+        """Spin in place. `yaw` is the throttle fraction (> 0 = CCW), clamped to
+        [-1, 1] and scaled by max_throttle. Held until the next
+        move()/turn()/stop()."""
+        yaw = max(-1.0, min(1.0, yaw))
+        with self._target_lock:
+            self._target = (0.0, 0.0, yaw * self.max_throttle)
 
     def stop(self) -> None:
         with self._target_lock:

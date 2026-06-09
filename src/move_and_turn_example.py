@@ -21,14 +21,14 @@ def main() -> int:
     ap.add_argument("--host", required=True, help="StickC Plus2 IP")
     args = ap.parse_args()
 
-    rover = Rover(args.host)
+    rover = Rover(args.host, max_throttle=0.5)
     rover.push_motor_config()
     print("forward 3 s / spin 2 s, repeating (Ctrl-C to stop)")
     try:
         while True:
-            rover.move(vx=0.5)  # forward
+            rover.move((1.0, 0.0))  # forward at full throttle (-> max_throttle)
             time.sleep(3)
-            rover.move(wz=0.5)  # spin in place (wz > 0 = CCW)
+            rover.turn(1.0)         # spin in place, full throttle (> 0 = CCW)
             time.sleep(2)
     except KeyboardInterrupt:
         pass
