@@ -15,8 +15,8 @@ import argparse
 import sys
 from pathlib import Path
 
-# Make the python_client modules importable without installing the package.
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "python_client"))
+# Make the crover_mod modules importable without installing the package.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src" / "crover_mod"))
 
 from coefs import DEFAULT_M_ORDER, M_MAX_ORDER, make_identity, save_json  # noqa: E402
 

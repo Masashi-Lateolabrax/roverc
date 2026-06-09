@@ -22,9 +22,9 @@ from pathlib import Path
 import pygame
 from pygame._sdl2.video import Renderer, Texture, Window
 
-# Make the shared python_client library importable without installing it.
+# Make the shared crover_mod library importable without installing it.
 # (widgets lives next to this script and resolves via the script dir.)
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src" / "python_client"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src" / "crover_mod"))
 
 from camera import (  # noqa: E402
     FRAMESIZE_CHOICES,
