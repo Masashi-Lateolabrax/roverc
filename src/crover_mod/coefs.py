@@ -284,6 +284,25 @@ def make_identity(
 # config.json -> CoefSet
 # ---------------------------------------------------------------------------
 
+def build_polys(
+    k_steady: float, T_sec: float, alpha_free: list[float], beta: list[float],
+) -> tuple[list[float], list[float]]:
+    """Reconstruct the unit-time q / r polynomials from the boundary-pinning
+    parameters alpha / beta.
+
+    With `target = sqrt(k_steady) / T` and `Sum(alpha) = 1` (the last alpha is
+    determined by the others), `Q(1) = target = sqrt(k)/T`, which forces
+    `f_k(T_k) = k_steady` (and by input-inversion symmetry `f_b(0) = k_steady`)
+    for any alpha/beta -- so the response is always continuous across a phase
+    boundary. `beta` is unconstrained (the `t(T-t)` term vanishes at the
+    boundary). `alpha_free` has `m_order - 1` entries, `beta` has `m_order`."""
+    target = math.sqrt(max(0.0, k_steady)) / T_sec if T_sec > 0.0 else 0.0
+    alpha = [*alpha_free, 1.0 - sum(alpha_free)]
+    q_unit = [a * target for a in alpha]
+    r_unit = [b * target for b in beta]
+    return q_unit, r_unit
+
+
 def from_config(cfg: dict) -> CoefSet:
     """Build the motor coefficient table from a parsed `config.json` dict.
 
@@ -299,14 +318,17 @@ def from_config(cfg: dict) -> CoefSet:
           "max_motor": 60, "m_order": 2,
           "front_left_fwd": {"k_steady": 1.0,
                              "kick_dur_ms": 100, "brake_dur_ms": 100,
-                             "q_k": [...], "r_k": [...],
-                             "q_b": [...], "r_b": [...]},
+                             "alpha_kick": [...],  "beta_kick": [...],
+                             "alpha_brake": [...], "beta_brake": [...]},
           ... (all 8 cells)
         }
 
-    Each polynomial (`q_k`/`r_k`/`q_b`/`r_b`) must have exactly `m_order`
-    entries. `config.json` is the single, fully-explicit source of motor
-    characteristics — there is no separate coefficient file.
+    The shape is given by the boundary-pinning parameters alpha / beta (see
+    `build_polys`), not raw q/r: `alpha_kick` / `alpha_brake` have `m_order-1`
+    entries (the last alpha is determined by `Sum(alpha)=1`, which pins the
+    phase-boundary height to `k_steady`), and `beta_kick` / `beta_brake` have
+    `m_order` entries. `config.json` is the single, fully-explicit source of
+    motor characteristics — there is no separate coefficient file.
     """
     if "motor" not in cfg:
         raise ValueError("config has no [motor] section")
@@ -316,12 +338,11 @@ def from_config(cfg: dict) -> CoefSet:
         raise ValueError(f"motor.m_order={m_order} out of range [1, {M_MAX_ORDER}]")
     cs = CoefSet(m_order=m_order, max_motor=int(motor["max_motor"]))
 
-    def _poly(entry: dict, key: str, cell: str) -> list[float]:
-        raw = [float(x) for x in entry[key]]
-        if len(raw) != m_order:
+    def _vec(entry: dict, name: str, length: int, cell: str) -> list[float]:
+        raw = [float(x) for x in entry[name]]
+        if len(raw) != length:
             raise ValueError(
-                f"motor.{cell}.{key} must have m_order={m_order} entries, "
-                f"got {len(raw)}"
+                f"motor.{cell}.{name} must have {length} entries, got {len(raw)}"
             )
         return raw
 
@@ -341,14 +362,22 @@ def from_config(cfg: dict) -> CoefSet:
         w = WHEEL_CONFIG_NAMES.index(wname)
         d = DIR_CONFIG_SUFFIX[suffix]
         entry = motor[key]
+        k_steady = float(entry["k_steady"])
+        kick_dur = int(entry["kick_dur_ms"])
+        brake_dur = int(entry["brake_dur_ms"])
+        q_k, r_k = build_polys(
+            k_steady, kick_dur / 1000.0,
+            _vec(entry, "alpha_kick", m_order - 1, key),
+            _vec(entry, "beta_kick", m_order, key),
+        )
+        q_b, r_b = build_polys(
+            k_steady, brake_dur / 1000.0,
+            _vec(entry, "alpha_brake", m_order - 1, key),
+            _vec(entry, "beta_brake", m_order, key),
+        )
         cs.cells[(w, d)] = PerDirCoefs(
-            k_steady=float(entry["k_steady"]),
-            kick_dur_ms=int(entry["kick_dur_ms"]),
-            brake_dur_ms=int(entry["brake_dur_ms"]),
-            q_k=_poly(entry, "q_k", key),
-            r_k=_poly(entry, "r_k", key),
-            q_b=_poly(entry, "q_b", key),
-            r_b=_poly(entry, "r_b", key),
+            k_steady=k_steady, kick_dur_ms=kick_dur, brake_dur_ms=brake_dur,
+            q_k=q_k, r_k=r_k, q_b=q_b, r_b=r_b,
         )
         seen.add((w, d))
     missing = [k for k in valid_cell_keys

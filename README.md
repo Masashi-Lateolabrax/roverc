@@ -94,22 +94,24 @@ uv run examples/teleop/teleop.py --host 192.168.1.123
 モータ係数（per-cell）は `<wheel>_<dir>` キー（`motor` 直下）。`<wheel>` は
 `front_left` / `front_right` / `rear_left` / `rear_right`、`<dir>` は `fwd` /
 `back`。**8 セル全てを必須で記述**し、各セルは `k_steady`、相の長さ
-`kick_dur_ms` / `brake_dur_ms`（**モータごとに別々**）、多項式
-`q_k` / `r_k` / `q_b` / `r_b`（各長さ `m_order`）を持つ。
+`kick_dur_ms` / `brake_dur_ms`（**モータごとに別々**）、形状パラメータ
+`alpha_kick` / `beta_kick` / `alpha_brake` / `beta_brake` を持つ。
 
 ```json
 "motor": {
   "max_motor": 60,
   "m_order": 2,
-  "front_left_fwd":   { "k_steady": 1.0, "kick_dur_ms": 100, "brake_dur_ms": 100, "q_k": [10.0, 0.0], "r_k": [10.0, 0.0], "q_b": [10.0, 0.0], "r_b": [10.0, 0.0] },
-  "front_left_back":  { "k_steady": 1.0, "kick_dur_ms": 100, "brake_dur_ms": 100, "q_k": [10.0, 0.0], "r_k": [10.0, 0.0], "q_b": [10.0, 0.0], "r_b": [10.0, 0.0] },
+  "front_left_fwd":   { "k_steady": 1.0, "kick_dur_ms": 100, "brake_dur_ms": 100, "alpha_kick": [1.0], "beta_kick": [1.0, 0.0], "alpha_brake": [1.0], "beta_brake": [1.0, 0.0] },
+  "front_left_back":  { "k_steady": 1.0, "kick_dur_ms": 100, "brake_dur_ms": 100, "alpha_kick": [1.0], "beta_kick": [1.0, 0.0], "alpha_brake": [1.0], "beta_brake": [1.0, 0.0] },
   "...":              "front_right_fwd / front_right_back / rear_left_fwd / rear_left_back / rear_right_fwd / rear_right_back も同様"
 }
 ```
 
-`q_k = r_k = q_b = r_b = √(k)/T`（T = そのセルの相長さ秒）の定数が線形 baseline
-（`f_k(t) = t/T_k`、`f_b(t) = 1 − t/T_b`）。`kick_dur_ms = 100` なら
-`10.0` がその値。輪ごとに特性・相長さを変えたいセルの数値を書き換える。
+`alpha` は長さ `m_order−1`（最後の α は `Σα=1` で従属）、`beta` は長さ
+`m_order`。`Σα=1` が `f_k(T_k)=k_steady`・`f_b(0)=k_steady` を構造的に保証する
+（相境界で高さが連続）。`beta` は境界に効かない自由形状。`alpha=[1.0]`,
+`beta=[1.0,0.0]` が線形 baseline（`f_k(t)=t/T_k`、`f_b(t)=1−t/T_b`）。
+`examples/motor_tuner` で形を見ながら数値を決められる。
 
 研究データ収集セッションは **係数を固定** で運用する（platform dynamics の
 非定常性を避ける、卒研の主旨「再現可能なデータ収集」に直結）。
@@ -158,6 +160,8 @@ per (wheel, dir) の **自由パラメータ**：
 だれて再度 k へ戻る」「線形ランプに小さな bulge を加える」型の形状が
 区間内非負を保ったまま表現可能。
 
-`config.json` の `motor` セクションから生成される identity は線形ベースライン：
-`k = 1`、`q_k = r_k = q_b = r_b = √(1)/T` 定数 → `f_k(t) = t/T_k`、
-`f_b(t) = 1 − t/T_b`。`m_order` は 1〜2 可変（`f` 多項式の次数は `2·m_order`）。
+`config.json` は `q/r` を直接持たず、無次元の `α`（=`alpha_*`）と
+`β`（=`beta_*`）で指定する。`from_config` が `q_unit[i]=α_i·√k/T`、
+`r_unit[i]=β_i·√k/T`（`α_last=1−Σα`）で `q/r` を復元する。identity は
+`alpha=[1]`, `beta=[1,0]` → `q_k=r_k=q_b=r_b=√(1)/T` 定数 → `f_k(t)=t/T_k`、
+`f_b(t)=1−t/T_b`。`m_order` は 1〜2 可変（`f` 多項式の次数は `2·m_order`）。
