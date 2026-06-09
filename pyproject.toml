@@ -15,7 +15,7 @@ dev = [
 [tool.ruff]
 line-length = 100
 target-version = "py39"
-src = ["src/crover_mod", "examples/teleop", "scripts"]
+src = ["src/crover_mod", "examples/teleop", "examples/motor_tuner", "scripts"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP"]
@@ -24,7 +24,7 @@ ignore = [
 ]
 
 [tool.pyright]
-include = ["src/crover_mod", "examples/teleop", "scripts"]
+include = ["src/crover_mod", "examples/teleop", "examples/motor_tuner", "scripts"]
 extraPaths = ["src/crover_mod"]
 pythonVersion = "3.9"
 reportMissingImports = "warning"
