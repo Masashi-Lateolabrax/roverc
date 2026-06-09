@@ -47,14 +47,14 @@ arduino-cli lib install M5Unified ArduinoJson
 
 ```sh
 # StickC Plus2（teleop server）
-./flash.sh src/roverc_server
+./flash.sh arduino_src/roverc_server
 
 # Timer Camera X（前方単眼）
-./flash.sh src/camera_node_front /dev/ttyACM0
+./flash.sh arduino_src/camera_node_front /dev/ttyACM0
 ```
 
 `flash.sh` はポート自動検出。複数台繋がっている時は明示指定。
-（旧ステレオ/魚眼スケッチ `src/camera_node_{left,right,fisheye}` は残置。別ライン研究で再利用する場合のみ使用）
+（旧ステレオ/魚眼スケッチ `arduino_src/camera_node_{left,right,fisheye}` は残置。別ライン研究で再利用する場合のみ使用）
 
 ## 操縦
 

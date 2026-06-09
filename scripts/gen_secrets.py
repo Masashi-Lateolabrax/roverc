@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Generate secrets.h for every sketch under src/ from config.json.
+"""Generate secrets.h for every sketch under arduino_src/ from config.json.
 
-A "sketch" is any immediate subdirectory of src/ that contains a .ino file.
-The same secrets.h content is written into each sketch directory so that
-sketches share WiFi credentials and any common configuration values.
+A "sketch" is any immediate subdirectory of arduino_src/ that contains a
+.ino file. The same secrets.h content is written into each sketch directory
+so that sketches share WiFi credentials and any common configuration values.
 
 Run from repo root:
-    python3 scripts/gen_secrets.py [--config config.json] [--src-dir src]
+    python3 scripts/gen_secrets.py [--config config.json] [--src-dir arduino_src]
 """
 import argparse
 import json
@@ -32,7 +32,7 @@ def main() -> int:
     repo_root = Path(__file__).resolve().parent.parent
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default=str(repo_root / "config.json"))
-    parser.add_argument("--src-dir", default=str(repo_root / "src"))
+    parser.add_argument("--src-dir", default=str(repo_root / "arduino_src"))
     args = parser.parse_args()
 
     config_path = Path(args.config)

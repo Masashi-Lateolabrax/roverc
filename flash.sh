@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Regenerate secrets, compile, and upload an Arduino sketch.
-#   ./flash.sh src/roverc_server                  # auto-detect port
-#   ./flash.sh src/camera_node /dev/ttyACM0       # explicit port
-#   ./flash.sh --list                             # only show connected boards
-#   PORT=/dev/ttyACM1 ./flash.sh src/camera_node  # override port via env
+#   ./flash.sh arduino_src/roverc_server                  # auto-detect port
+#   ./flash.sh arduino_src/camera_node_front /dev/ttyACM0 # explicit port
+#   ./flash.sh --list                                     # only show connected boards
+#   PORT=/dev/ttyACM1 ./flash.sh arduino_src/roverc_server  # override port via env
 #
 # The sketch directory must contain an `fqbn.txt` whose first line is the FQBN.
 set -euo pipefail
@@ -17,8 +17,8 @@ usage: $0 <sketch_dir> [/dev/ttyXXX]
        $0 --list
 
 Examples:
-  $0 src/roverc_server
-  $0 src/camera_node /dev/ttyACM0
+  $0 arduino_src/roverc_server
+  $0 arduino_src/camera_node_front /dev/ttyACM0
 EOF
   exit 2
 }
@@ -84,5 +84,5 @@ echo "FQBN:   $FQBN"
 echo "Port:   $PORT"
 
 uv run --no-project python3 scripts/gen_secrets.py
-arduino-cli compile --fqbn "$FQBN" --libraries "$REPO_ROOT/lib" "$SKETCH"
+arduino-cli compile --fqbn "$FQBN" --libraries "$REPO_ROOT/arduino_src/lib" "$SKETCH"
 arduino-cli upload -p "$PORT" --fqbn "$FQBN" "$SKETCH"

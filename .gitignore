@@ -4,7 +4,7 @@
 *.tmp.*
 
 config.json
-src/*/secrets.h
+arduino_src/*/secrets.h
 
 .venv/
 __pycache__/

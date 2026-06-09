@@ -15,9 +15,9 @@ The RoverC HAT plugs into the bottom 8-pin header of the StickC Plus2:
 ```sh
 # from repo root, after editing config.json
 arduino-cli lib install ArduinoJson
-./flash.sh                  # auto-detect port
-./flash.sh /dev/ttyACM0     # explicit port
-./flash.sh --list           # show connected boards
+./flash.sh arduino_src/roverc_server               # auto-detect port
+./flash.sh arduino_src/roverc_server /dev/ttyACM0  # explicit port
+./flash.sh --list                                  # show connected boards
 ```
 
 `secrets.h` is generated from `config.json` (gitignored). Re-run `uv run scripts/gen_secrets.py` whenever WiFi credentials, port, or control parameters change.

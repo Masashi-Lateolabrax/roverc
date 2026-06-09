@@ -6,5 +6,5 @@ sketch only fixes the role string. The `front` role maps to I2C slave
 address 0x40 on the RoverC HAT bus.
 
 ```bash
-./flash.sh src/camera_node_front
+./flash.sh arduino_src/camera_node_front
 ```
