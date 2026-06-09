@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import socket
 import threading
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -42,6 +43,15 @@ class Rover:
         self._client = RoverCClient(host, port, camera_registry=self._registry)
         self._streams: dict[str, CameraStream] = {}
         self._closed = False
+        # Current motion setpoint, resent continuously so the firmware failsafe
+        # (stops the motors if no command arrives for ~200 ms) keeps the rover
+        # moving until the next move()/stop(). Callers set it once and walk away.
+        self._target = (0.0, 0.0, 0.0)
+        self._target_lock = threading.Lock()
+        self._motion_thread = threading.Thread(
+            target=self._motion_loop, name="RoverMotion", daemon=True
+        )
+        self._motion_thread.start()
         # Listen for the camera's own UDP announce so discovery works even
         # without the StickC relaying camera state.
         self._announce_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -56,11 +66,23 @@ class Rover:
     # -- motion ----------------------------------------------------------
 
     def move(self, vx: float = 0.0, vy: float = 0.0, wz: float = 0.0) -> None:
-        """Send one motion command. vx forward, vy strafe-left, wz CCW yaw."""
-        self._client.send_motion(vx, vy, wz)
+        """Set the motion setpoint and return immediately. The rover holds it
+        (a background thread keeps resending) until the next move()/stop().
+        vx forward, vy strafe-left, wz CCW yaw."""
+        with self._target_lock:
+            self._target = (vx, vy, wz)
 
     def stop(self) -> None:
+        with self._target_lock:
+            self._target = (0.0, 0.0, 0.0)
         self._client.send_motion(0.0, 0.0, 0.0)
+
+    def _motion_loop(self) -> None:
+        while not self._closed:
+            with self._target_lock:
+                vx, vy, wz = self._target
+            self._client.send_motion(vx, vy, wz)
+            time.sleep(0.02)  # 50 Hz, well inside the ~200 ms firmware failsafe
 
     def push_motor_config(self, config_path: str | Path | None = None) -> int:
         """Load config.json's motor section and push the coefficient table to
@@ -128,6 +150,7 @@ class Rover:
 
     def close(self) -> None:
         self._closed = True
+        self._motion_thread.join(timeout=1.0)
         for stream in self._streams.values():
             stream.stop()
         self._client.close()
