@@ -1,0 +1,143 @@
+"""High-level facade for a single RoverC.
+
+`Rover` wraps the UDP control client, camera discovery, and the MJPEG stream
+behind a small surface:
+
+    rover = Rover("192.168.1.123")   # StickC Plus2 IP
+    rover.move(vx=0.5, wz=0.0)       # drive
+    img = rover.get_camera()         # latest front-camera frame as a BGR ndarray
+    rover.stop()
+    rover.close()
+
+Camera discovery is automatic: the camera node broadcasts a UDP announce with
+its IP / HTTP port, and the StickC also relays camera state, so callers never
+deal with camera addresses. `get_camera()` returns the most recent decoded
+frame (or None until one arrives) and lazily opens the stream on first use.
+"""
+from __future__ import annotations
+
+import json
+import socket
+import threading
+from dataclasses import replace
+from pathlib import Path
+
+from camera import CameraRegistry, CameraStream
+from roverc import RoverCClient
+
+# repo-root/config.json, resolved relative to this file (src/crover_mod/).
+_DEFAULT_CONFIG = Path(__file__).resolve().parents[2] / "config.json"
+
+
+class Rover:
+    def __init__(
+        self,
+        host: str,
+        port: int = 4210,
+        announce_port: int = 4211,
+    ) -> None:
+        self.host = host
+        self.port = port
+        self._registry = CameraRegistry()
+        self._client = RoverCClient(host, port, camera_registry=self._registry)
+        self._streams: dict[str, CameraStream] = {}
+        self._closed = False
+        # Listen for the camera's own UDP announce so discovery works even
+        # without the StickC relaying camera state.
+        self._announce_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._announce_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._announce_sock.bind(("", announce_port))
+        self._announce_sock.settimeout(0.5)
+        self._announce_thread = threading.Thread(
+            target=self._announce_loop, name="RoverAnnounce", daemon=True
+        )
+        self._announce_thread.start()
+
+    # -- motion ----------------------------------------------------------
+
+    def move(self, vx: float = 0.0, vy: float = 0.0, wz: float = 0.0) -> None:
+        """Send one motion command. vx forward, vy strafe-left, wz CCW yaw."""
+        self._client.send_motion(vx, vy, wz)
+
+    def stop(self) -> None:
+        self._client.send_motion(0.0, 0.0, 0.0)
+
+    def push_motor_config(self, config_path: str | Path | None = None) -> int:
+        """Load config.json's motor section and push the coefficient table to
+        the firmware. Returns the number of chunk transmissions."""
+        from coefs import from_config, push_to_firmware
+
+        path = Path(config_path) if config_path is not None else _DEFAULT_CONFIG
+        with open(path) as f:
+            cfg = json.load(f)
+        coefs = from_config(cfg)
+        return push_to_firmware(
+            coefs, self._client.send_poly_chunk, self._client.send_config_dict
+        )
+
+    # -- camera ----------------------------------------------------------
+
+    def get_camera(self, role: str = "front"):
+        """Latest frame for `role` as a BGR ndarray, or None if none yet."""
+        stream = self._stream_for(role)
+        if stream is None:
+            return None
+        jpeg, _count, _ts, _err, _errors = stream.latest()
+        if jpeg is None:
+            return None
+        import cv2
+        import numpy as np
+
+        return cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
+
+    def _stream_for(self, role: str) -> CameraStream | None:
+        stream = self._streams.get(role)
+        if stream is not None:
+            return stream
+        info = self._registry.latest(role)
+        if info is None:
+            return None
+        # The announce advertises /jpg (single shot); we want the MJPEG /stream.
+        stream = CameraStream(replace(info, jpg_path="/stream"))
+        stream.start()
+        self._streams[role] = stream
+        return stream
+
+    def _announce_loop(self) -> None:
+        while not self._closed:
+            try:
+                data, _ = self._announce_sock.recvfrom(2048)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            try:
+                msg = json.loads(data.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                continue
+            role = msg.get("role")
+            ip = msg.get("ip")
+            http_port = msg.get("http_port")
+            if isinstance(role, str) and isinstance(ip, str) and isinstance(http_port, int):
+                self._registry.update(
+                    role, ip, http_port, bool(msg.get("camera_ok", False)),
+                    jpg_path=str(msg.get("jpg_path", "/jpg")),
+                )
+
+    # -- lifecycle -------------------------------------------------------
+
+    def close(self) -> None:
+        self._closed = True
+        for stream in self._streams.values():
+            stream.stop()
+        self._client.close()
+        try:
+            self._announce_sock.close()
+        except OSError:
+            pass
+
+    def __enter__(self) -> Rover:
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
