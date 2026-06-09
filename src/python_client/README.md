@@ -7,10 +7,9 @@ PC 側コード。ユーザ向けの起動・運用手順は **トップレベ�
 
 | File | Role |
 |---|---|
-| `calibrate.py` | CMA-ES ループによる多項式係数の自動校正 |
 | `roverc.py` | `RoverCClient`（UDP socket、JSON / binary 多重化、telemetry rx loop） |
 | `camera.py` | `CameraRegistry` + `CameraStream`（HTTP MJPEG 受信） |
-| `coefs.py` | 多項式係数の dataclass、JSON I/O、binary chunk encoder、CMA-ES vector pack/unpack |
+| `coefs.py` | 多項式係数の dataclass、JSON I/O、binary chunk encoder（identity baseline と `--coefs` push 用） |
 | `telemetry.py` | 0xD2 packet パーサ + thread-safe ring buffer |
 
 teleop UI アプリ（`teleop.py`）と専用 widget（`widgets.py`）は `examples/teleop/`
@@ -19,7 +18,7 @@ teleop UI アプリ（`teleop.py`）と専用 widget（`widgets.py`）は `examp
 
 ## 依存関係
 
-`pyproject.toml` で管理。`pygame`（teleop）、`numpy` + `cma`（calibrate）。
+`pyproject.toml` で管理。ランタイムは `pygame`（teleop）のみ。
 
 ## ワイヤフォーマット
 
@@ -106,5 +105,5 @@ IP / port / `camera_ok` / `vbat_mv`（カメラ側 `analogReadMilliVolts(38) *
 ```
 
 `telemetry.parse(raw)` → `TelemetryPacket`（`pc_t` は受信時の `time.monotonic()`）。
-`TelemetryQueue` がバッファ。`calibrate.py` は trial 毎に `drain()` して
-コスト計算する。
+teleop は最新パケットだけ保持して velocity HUD / battery 表示に使う。
+（`TelemetryQueue` は旧 calibrate 用のバッファで、現在は未使用。）

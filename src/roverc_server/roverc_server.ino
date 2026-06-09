@@ -200,8 +200,9 @@ static float eval_poly1d(const Poly1D &p, float t) {
 
 // Default at boot: k_steady = 1 (p = s during STEADY), kick polynomial linear
 // 0 → 1 over T_k (matches the f_k(0)=0, f_k(T_k)=k boundary conditions),
-// brake polynomial all-zero (no active brake until calibrate.py pushes
-// constraint-respecting coefficients). T_k_sec = 0 collapses kick to zero.
+// brake polynomial all-zero (no active brake until constraint-respecting
+// coefficients are pushed, e.g. via teleop --coefs). T_k_sec = 0 collapses
+// kick to zero.
 static void init_poly_defaults() {
   float Tk_sec = static_cast<float>(g_cfg.kick_dur_ms) / 1000.0f;
   for (int i = 0; i < 4; ++i) {

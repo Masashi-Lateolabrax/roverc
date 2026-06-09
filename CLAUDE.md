@@ -23,7 +23,6 @@
 - **カメラストリーミング debug 知見**（MJPEG / urllib `read1` coalescing / Wire1 self-heal / I2C bus recovery / XCLK 8MHz 等）→ `docs/camera_streaming_lessons.md`
 - **別ライン研究プログラム候補（進学予定学生向け）**（ステレオ前提。現行リグ = 前方単眼では非搭載、将来ライン）→ `docs/async_stereo_interpolation.md`
 - **魚眼カメラ + IMU による VIO 速度推定ロードマップ**（魚眼前提。現行リグ = 前方単眼では非搭載、将来ライン）→ `docs/fisheye_vio_roadmap.md`
-- **卒研テーマ: 低コスト・高ロバストなメカナム運動キャリブレーション (offline 二段 intrinsic/contact 分離設計)**（学生主軸テーマ, サーベイ済 2026-04-30. 2026-06-09 に前方単眼構成へ再設計 = Tier1/Tier2 ともに前方単眼カメラ + マーカーで ego-motion ground truth を取得。推しポイント = 実用 + 低コスト + 高ロバスト）→ `docs/calibration_thesis.md`
 - **RoverC ハード仕様** → `docs/roverc_datasheet.pdf` / `docs/roverc_pro_datasheet.pdf` / `docs/roverc_i2c_protocol.pdf`
 - **StickC Plus2 schematic** → `docs/stickc_plus2_schematic.pdf`
 
@@ -113,7 +112,7 @@ NNに（状況 + 複数オペレータの指示）を入力し、誰のどの指
 - 同期精度は明示的に測定対象とする
 
 ### 同期方式（前方単眼カメラ + ロボット状態）
-**2026-06-09 変更**：前方ステレオ2台構成から前方単眼1台へ変更。カメラ間ペアリング（左右フレームの時刻整合）は不要になり、残る同期課題は **単一カメラフレーム ↔ ロボット状態（指令・telemetry）の時刻整合** のみ（calibration_thesis の ego-motion ground truth とモータ指令を揃えるのに必要）。
+**2026-06-09 変更**：前方ステレオ2台構成から前方単眼1台へ変更。カメラ間ペアリング（左右フレームの時刻整合）は不要になり、残る同期課題は **単一カメラフレーム ↔ ロボット状態（指令・telemetry）の時刻整合** のみ（記録データでカメラフレームとモータ指令を揃えるのに必要）。
 - **方針：ソフトウェアタイムスタンプ + 有線 I2C 時刻同期**（2026-04-26 確定、単眼でも有効）
 - StickC Plus2 を I2C master、RoverC STM32（0x38）に加えて前方カメラ1台を slave として同バスに乗せる構成（カメラ：0x40）。RoverC HAT バス (Plus2 P1 STICKIO: pin 3=G26/SCL, pin 5=G0/SDA、無印 StickC と同一配置、`stickc_plus2_schematic.pdf` で確認済) → RoverC Grove ポート → カメラ HY2.0-4P (GPIO 13=SCL, 4=SDA) で配線、既存 Grove ケーブル流用、追加配線なし（単眼化でケーブルスプライス不要）
 - RoverC 公式ドキュメントの対応表記は「StickC / StickC Plus」のみで Plus2 名は未掲載だが、HAT ピン配列が無印と完全一致するため電気的に互換
@@ -154,7 +153,7 @@ NNに（状況 + 複数オペレータの指示）を入力し、誰のどの指
 前提：プラットフォーム bring-up（RoverC 遠隔操作・カメラ単眼・時間同期・性能評価。旧ステレオ化段は単眼化で廃止）は指導者が完遂し、検証済の状態で学生に引き渡される（`docs/platform_bringup.md`）。学生は Mediator 層に集中する。
 
 - **4〜6月**：Python 基礎 + 提供プラットフォーム使用法習得 + Arduino 軽め（StickC スケッチを読める程度） + 物理実験環境のラフ設計開始
-- **6〜8月**：物理実験環境構築（コース、障害物、ゴール、前方単眼カメラマウント） + 単眼カメラ intrinsic 校正 + マーカー（ArUco/AprilTag）設置・運用手順の文書化
+- **6〜8月**：物理実験環境構築（コース、障害物、ゴール、前方単眼カメラマウント） + カメラセットアップと運用手順の文書化
 - **8〜10月**：複数オペレータ UI 実装（PC 側、キーボード × 2 を最低構成、ジョイスティック・ブラウザは余力で） + 同期記録パイプライン（Python、全ストリーム CSV/JSONL/parquet 出力）
 - **10〜12月**：ベースライン Mediator 実装（averaging / dominance / voting） + 実セッション運営とデータ収集
 - **1〜2月**：データ品質検証（同期ジッタ、欠損率、信号対雑音比） + 卒論執筆

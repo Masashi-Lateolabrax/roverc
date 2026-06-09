@@ -88,9 +88,9 @@ def parse(raw: bytes, pc_t: float | None = None) -> TelemetryPacket | None:
 
 
 class TelemetryQueue:
-    """Thread-safe ring buffer fed from RoverCClient's rx loop. The typical
-    pattern in calibrate.py is `drain()` once per trial to grab everything
-    that arrived during the trial window."""
+    """Thread-safe ring buffer fed from RoverCClient's rx loop. Currently
+    unused (it backed the removed CMA-ES calibrator, which drained it once
+    per trial); kept as a general-purpose buffer for future batch consumers."""
 
     def __init__(self, maxlen: int = 5000) -> None:
         self._lock = threading.Lock()

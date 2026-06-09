@@ -35,7 +35,7 @@ scalar each:
     Q_k(1) = √(k_steady) / T_k        (forces f_k(T_k) = k_steady)
     Q_b(1) = √(k_steady) / T_b        (forces f_b(0)   = k_steady)
 
-CMA-ES free-parameter layout per `(wheel, dir)`:
+Free-parameter layout per `(wheel, dir)`:
     [x_k_steady,
      α_k_0..α_k_{m-2},  β_k_0..β_k_{m-1},
      α_b_0..α_b_{m-2},  β_b_0..β_b_{m-1}]
@@ -105,7 +105,7 @@ class PerDirCoefs:
         input-inverted)
 
     Boundary conditions are not enforced by this class; callers go
-    through `vector_to_coefs` or `make_identity` to get a
+    through `make_identity` to get a
     constraint-respecting set."""
     k_steady: float = 1.0
     q_k: list[float] = field(default_factory=lambda: [1.0])
@@ -234,19 +234,8 @@ def _f_brake_monomial(q_unit: list[float], r_unit: list[float], T_b: float) -> l
 
 
 # ---------------------------------------------------------------------------
-# Free-parameter <-> CoefSet bridge for CMA-ES
+# Identity / baseline coefficient construction
 # ---------------------------------------------------------------------------
-
-def free_params_per_cell(m_order: int) -> int:
-    """Per cell: 1 (k_steady) + 2 · ((m−1) (α free) + m (β free)) = 4m − 1.
-    Layout: `[x_k, α_k_0..α_k_{m-2}, β_k_0..β_k_{m-1},
-                  α_b_0..α_b_{m-2}, β_b_0..β_b_{m-1}]`."""
-    return 1 + 2 * (2 * m_order - 1)
-
-
-def total_free_params(m_order: int) -> int:
-    return N_WHEELS * len(DIRS) * free_params_per_cell(m_order)
-
 
 def _target_scale(k_steady: float, T: float) -> float:
     """Boundary-driven target: `Q(1) = target = √(k_steady) / T`. Used
@@ -254,19 +243,6 @@ def _target_scale(k_steady: float, T: float) -> float:
     so the identity vector is dimensionless `[1, 0, ..., 0]`."""
     k = max(0.0, k_steady)
     return math.sqrt(k) / T if T > 0.0 else 0.0
-
-
-def _alpha_to_q(alpha_free: list[float], target: float) -> list[float]:
-    """`Q_unit[i] = α_i · target` with `Σα = 1` enforced by deriving the
-    last α from the free ones."""
-    alpha_last = 1.0 - sum(alpha_free)
-    return [a * target for a in (list(alpha_free) + [alpha_last])]
-
-
-def _beta_to_r(beta_free: list[float], target: float) -> list[float]:
-    """`R_unit[i] = β_i · target`. All m β values are free (no
-    boundary constraint on r)."""
-    return [b * target for b in beta_free]
 
 
 def make_identity(
@@ -303,87 +279,6 @@ def make_identity(
                 r_b=list(rb),
             )
     return cs
-
-
-def vector_to_coefs(v, template: CoefSet) -> CoefSet:
-    """Build a CoefSet from a CMA-ES free-parameter vector. Length is
-    `8 · (4m − 1)` with `m = template.m_order`."""
-    import numpy as np
-    m = template.m_order
-    fpc = free_params_per_cell(m)
-    expected = total_free_params(m)
-    if len(v) != expected:
-        raise ValueError(f"vector length {len(v)} != expected {expected}")
-    v_arr = np.asarray(v, dtype=np.float64)
-    cs = CoefSet(
-        m_order=m,
-        max_motor=template.max_motor,
-        kick_dur_ms=template.kick_dur_ms,
-        brake_dur_ms=template.brake_dur_ms,
-    )
-    Tk_sec = template.kick_dur_ms / 1000.0
-    Tb_sec = template.brake_dur_ms / 1000.0
-    n_alpha = m - 1
-    n_beta = m
-    for ci, key in enumerate(cs.cell_keys()):
-        offset = ci * fpc
-        x_k = float(v_arr[offset])
-        k_steady = x_k * x_k
-        idx = offset + 1
-        alpha_k = [float(v_arr[idx + i]) for i in range(n_alpha)]
-        idx += n_alpha
-        beta_k = [float(v_arr[idx + i]) for i in range(n_beta)]
-        idx += n_beta
-        alpha_b = [float(v_arr[idx + i]) for i in range(n_alpha)]
-        idx += n_alpha
-        beta_b = [float(v_arr[idx + i]) for i in range(n_beta)]
-        target_qk = _target_scale(k_steady, Tk_sec)
-        target_qb = _target_scale(k_steady, Tb_sec)
-        cs.cells[key] = PerDirCoefs(
-            k_steady=k_steady,
-            q_k=_alpha_to_q(alpha_k, target_qk),
-            r_k=_beta_to_r(beta_k, target_qk),
-            q_b=_alpha_to_q(alpha_b, target_qb),
-            r_b=_beta_to_r(beta_b, target_qb),
-        )
-    return cs
-
-
-def coefs_to_vector(cs: CoefSet):
-    """Inverse of `vector_to_coefs`: read free parameters directly out
-    of the canonical q/r polynomials. The α/β recovery divides by the
-    target; the last α is dropped (determined by `Σα = 1`)."""
-    import numpy as np
-    m = cs.m_order
-    fpc = free_params_per_cell(m)
-    out = np.zeros(total_free_params(m), dtype=np.float64)
-    Tk_sec = cs.kick_dur_ms / 1000.0
-    Tb_sec = cs.brake_dur_ms / 1000.0
-    n_alpha = m - 1
-    n_beta = m
-    for ci, key in enumerate(cs.cell_keys()):
-        cell = cs.cells.get(key, PerDirCoefs())
-        offset = ci * fpc
-        out[offset] = math.sqrt(max(0.0, cell.k_steady))
-        target_qk = _target_scale(cell.k_steady, Tk_sec)
-        target_qb = _target_scale(cell.k_steady, Tb_sec)
-        idx = offset + 1
-        for i in range(n_alpha):
-            qi = cell.q_k[i] if i < len(cell.q_k) else 0.0
-            out[idx + i] = qi / target_qk if target_qk > 0.0 else 0.0
-        idx += n_alpha
-        for i in range(n_beta):
-            ri = cell.r_k[i] if i < len(cell.r_k) else 0.0
-            out[idx + i] = ri / target_qk if target_qk > 0.0 else 0.0
-        idx += n_beta
-        for i in range(n_alpha):
-            qi = cell.q_b[i] if i < len(cell.q_b) else 0.0
-            out[idx + i] = qi / target_qb if target_qb > 0.0 else 0.0
-        idx += n_alpha
-        for i in range(n_beta):
-            ri = cell.r_b[i] if i < len(cell.r_b) else 0.0
-            out[idx + i] = ri / target_qb if target_qb > 0.0 else 0.0
-    return out
 
 
 # ---------------------------------------------------------------------------

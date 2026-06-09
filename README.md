@@ -1,7 +1,7 @@
 # roverc
 
 M5StickC Plus2 が RoverC（メカナム車）を I2C で駆動し、前方単眼 Timer Camera X
-1 台で JPEG を WiFi 配信、PC（Python）から操縦・校正・記録する。
+1 台で JPEG を WiFi 配信、PC（Python）から操縦・記録する。
 
 ## ハードウェア
 
@@ -30,7 +30,7 @@ uv sync                # ランタイム依存のみ
 uv sync --group dev    # ruff + pyright も含める
 ```
 
-ランタイム依存：`pygame`（teleop UI）、`numpy` + `cma`（calibrate の CMA-ES ループ）。
+ランタイム依存：`pygame`（teleop UI）のみ。
 dev 依存：`ruff`（lint + import 整列）、`pyright`（型検査）。設定は `pyproject.toml` の
 `[tool.ruff]` / `[tool.pyright]` セクション。
 
@@ -79,41 +79,21 @@ uv run examples/teleop/teleop.py --host 192.168.1.123 --coefs coefs/identity.jso
 
 複数キー同時押し可。settings 窓のスライダ（trim / kick / framesize / quality）を変更したら **Apply** ボタンで反映。
 
-## 校正（CMA-ES、自動）
+## モータ係数の適用
 
-`teleop.py` で手動 trim を回す代わりに、平らな床に置いた状態で
-`calibrate.py` を流して per-wheel の (3,3) 多項式係数を学習させる。
-
-```sh
-# 世代数と個体数を直接指定。
-# 5 candidates × 10 trials × ~3.5s/trial ≈ 175s/世代、10 世代で 30 分弱。
-uv run python src/python_client/calibrate.py \
-    --host 192.168.1.123 \
-    --generations 10 --pop-size 5 \
-    --out coefs/v1.json
-
-# 既存の校正結果から再開 / 洗練
-uv run python src/python_client/calibrate.py \
-    --host 192.168.1.123 \
-    --generations 20 --pop-size 5 \
-    --init-coefs coefs/v1.json \
-    --out coefs/v2.json
-```
-
-各候補は `--n-trials`（既定 10）の trial（ランダム direction × 1.5s 駆動 +
-1.5s 解放）で評価され、コストは
-`α·∫|gz| during drive + β·∫|gz| during release`（β=2、解放時の残留 yaw を強く
-ペナルティ）。`--out` は毎ジェネレーション上書きされるので、`Ctrl-C` で中断
-しても直前のベストはそこに残っており、`--init-coefs <out>` で再開できる。
-
-校正後：
+自動校正（CMA-ES の `calibrate.py`）は廃止した。モータ補正係数は baseline
+（identity）を生成して使うか、teleop の trim スライダで手動調整する。
 
 ```sh
-uv run examples/teleop/teleop.py --host <IP> --coefs coefs/v1.json
+# identity（線形 baseline）係数を生成
+uv run python scripts/make_identity_coefs.py coefs/identity.json
+
+# 起動時に係数ファイルを firmware へプッシュ
+uv run examples/teleop/teleop.py --host <IP> --coefs coefs/identity.json
 ```
 
-研究データ収集セッションは **校正済係数を固定** で運用する（platform
-dynamics の非定常性を避ける、卒研の主旨「再現可能なデータ収集」に直結）。
+研究データ収集セッションは **係数を固定** で運用する（platform dynamics の
+非定常性を避ける、卒研の主旨「再現可能なデータ収集」に直結）。
 
 ## モータ補正モデル
 
@@ -147,11 +127,10 @@ f_b(t) = (T_b−t)² · q_b(T_b−t)² + t(T_b−t) · r_b(T_b−t)²  on [0, T_
 （default で 4、ファーム `POLY_MAX_ORDER = 5` 内）。境界条件は
 `Q(1) = √(k)/T` という線形制約 1 本ずつに翻訳。
 
-per (wheel, dir) の **自由パラメータ**（CMA-ES 最適化対象）：
+per (wheel, dir) の **自由パラメータ**：
 `1 (k) + 2·((m−1) (q free) + m (r free)) = 4·m − 1`。m=2 で **7 / cell ×
-8 cells = 56 次元**。CMA-ES の Hansen λ デフォルトは `4 + ⌊3·ln(56)⌋ = 16`。
-`α`（q の target 正規化）と `β`（r の target 正規化）は無次元化されており、
-identity ベクトルは `[1, 1, 1, 0, 1, 1, 0]`（cell ごと）。
+8 cells = 56 次元**。`α`（q の target 正規化）と `β`（r の target 正規化）は
+無次元化されており、identity ベクトルは `[1, 1, 1, 0, 1, 1, 0]`（cell ごと）。
 
 **`[0, T]` 限定の非負性**：以前の `t·g²` 形式は `g²` が `ℝ` 全体で非負を
 要求するため過剰制約だったが、`q² + t(T−t)·r²` 形式は `t(T−t)` 因子が

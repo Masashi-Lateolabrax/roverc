@@ -681,7 +681,7 @@ def main() -> int:
         type=Path,
         default=None,
         help="Polynomial coefficient JSON to push to the firmware at startup. "
-             "Produced by calibrate.py or scripts/make_identity_coefs.py.",
+             "Produced by scripts/make_identity_coefs.py.",
     )
     args = parser.parse_args()
 
