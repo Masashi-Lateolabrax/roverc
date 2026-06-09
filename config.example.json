@@ -1,0 +1,93 @@
+{
+  "wifi": {
+    "ssid": "YourSSID",
+    "password": "YourPassword"
+  },
+  "server": {
+    "port": 4210
+  },
+  "control": {
+    "rate_hz": 50,
+    "failsafe_ms": 200
+  },
+  "camera": {
+    "announce_port": 4211,
+    "announce_interval_ms": 1000
+  },
+  "motor": {
+    "max_motor": 60,
+    "m_order": 2,
+    "front_left_fwd": {
+      "k_steady": 1.0,
+      "kick_dur_ms": 100,
+      "brake_dur_ms": 100,
+      "alpha_kick": [1.0],
+      "beta_kick": [1.0, 0.0],
+      "alpha_brake": [1.0],
+      "beta_brake": [1.0, 0.0]
+    },
+    "front_left_back": {
+      "k_steady": 1.0,
+      "kick_dur_ms": 100,
+      "brake_dur_ms": 100,
+      "alpha_kick": [1.0],
+      "beta_kick": [1.0, 0.0],
+      "alpha_brake": [1.0],
+      "beta_brake": [1.0, 0.0]
+    },
+    "front_right_fwd": {
+      "k_steady": 1.0,
+      "kick_dur_ms": 100,
+      "brake_dur_ms": 100,
+      "alpha_kick": [1.0],
+      "beta_kick": [1.0, 0.0],
+      "alpha_brake": [1.0],
+      "beta_brake": [1.0, 0.0]
+    },
+    "front_right_back": {
+      "k_steady": 1.0,
+      "kick_dur_ms": 100,
+      "brake_dur_ms": 100,
+      "alpha_kick": [1.0],
+      "beta_kick": [1.0, 0.0],
+      "alpha_brake": [1.0],
+      "beta_brake": [1.0, 0.0]
+    },
+    "rear_left_fwd": {
+      "k_steady": 1.0,
+      "kick_dur_ms": 100,
+      "brake_dur_ms": 100,
+      "alpha_kick": [1.0],
+      "beta_kick": [1.0, 0.0],
+      "alpha_brake": [1.0],
+      "beta_brake": [1.0, 0.0]
+    },
+    "rear_left_back": {
+      "k_steady": 1.0,
+      "kick_dur_ms": 100,
+      "brake_dur_ms": 100,
+      "alpha_kick": [1.0],
+      "beta_kick": [1.0, 0.0],
+      "alpha_brake": [1.0],
+      "beta_brake": [1.0, 0.0]
+    },
+    "rear_right_fwd": {
+      "k_steady": 1.0,
+      "kick_dur_ms": 100,
+      "brake_dur_ms": 100,
+      "alpha_kick": [1.0],
+      "beta_kick": [1.0, 0.0],
+      "alpha_brake": [1.0],
+      "beta_brake": [1.0, 0.0]
+    },
+    "rear_right_back": {
+      "k_steady": 1.0,
+      "kick_dur_ms": 100,
+      "brake_dur_ms": 100,
+      "alpha_kick": [1.0],
+      "beta_kick": [1.0, 0.0],
+      "alpha_brake": [1.0],
+      "beta_brake": [1.0, 0.0]
+    }
+  }
+}

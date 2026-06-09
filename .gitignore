@@ -1,0 +1,10 @@
+.claude/memories/
+.claude/settings.local.json
+
+*.tmp.*
+
+config.json
+arduino_src/*/secrets.h
+
+.venv/
+__pycache__/

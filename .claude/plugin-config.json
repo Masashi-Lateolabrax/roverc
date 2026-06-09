@@ -1,0 +1,26 @@
+{
+  "committable_paths": {
+    "feature/*": ["**"],
+    "develop": ["**"],
+    "main": []
+  },
+  "remotes": {
+    "DEFAULT": {
+      "ssh_key": "~/.ssh/gitea_claude",
+      "ssh_user": "git",
+      "git_name": "Claude",
+      "git_email": "claude@anthropic.com"
+    },
+    "origin": {
+      "repo": "Masashi-Lateolabrax/roverc",
+      "url": "https://github.com"
+    },
+    "gitea": {
+      "repo": "perciformes/roverc",
+      "url": "http://git.perciformes-family.vpn"
+    }
+  },
+  "version": {
+    "git-cc-plugin": "0.4.0"
+  }
+}

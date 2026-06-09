@@ -1,0 +1,30 @@
+# examples/teleop
+
+RoverC を WASD で操縦する pygame テレオペ UI。プラットフォームの共有
+クライアントライブラリ（`src/crover_mod/` の `roverc` / `camera` /
+`coefs` / `telemetry`）の使用例。
+
+## 構成
+
+| File | Role |
+|---|---|
+| `teleop.py` | pygame マルチウィンドウ UI、UDP モーション送信、前方単眼カメラ表示、カメラ設定（framesize / quality）、バッテリ表示 |
+| `widgets.py` | この UI 専用の pygame Slider / Button / ChoiceRow |
+
+`teleop.py` は冒頭で `src/crover_mod` を `sys.path` に追加し、共有ライブラリを
+import する（パッケージ未インストールでも動く既存の `scripts/` と同じ方式）。
+`widgets` は本ディレクトリから直接 import される。
+
+## 実行
+
+```sh
+# StickC LCD に出る IP を直接渡す
+uv run examples/teleop/teleop.py --host 192.168.1.123
+```
+
+起動時に `config.json` の `motor` セクションから係数表を生成して firmware へ
+自動プッシュする。モータ特性の実行時調整機能は持たない（`config.json` が唯一の
+設定源）。
+
+3 ウィンドウ（input / settings / cameras）が開く。キー割り当て・操作は
+トップレベル `../../README.md` の「操縦」節を参照。

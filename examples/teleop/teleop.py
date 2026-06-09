@@ -1,0 +1,818 @@
+#!/usr/bin/env python3
+"""Keyboard teleop for RoverC via the StickC Plus2 UDP server.
+
+Three pygame windows (SDL2 multi-window):
+  - Input: capture WASD/QE keystrokes; only active when this window has focus
+  - Settings: camera framesize / quality; mouse-driven
+  - Cameras: the single front monocular JPEG stream
+
+Motor characteristics are not tuned here — they come solely from
+config.json's [motor] section, pushed to the firmware once at startup.
+
+Usage:
+    uv run examples/teleop/teleop.py --host 192.168.1.123
+"""
+from __future__ import annotations
+
+import argparse
+import io
+import json
+import sys
+import threading
+import time
+from pathlib import Path
+
+import pygame
+from pygame._sdl2.video import Renderer, Texture, Window
+
+# Make the shared crover_mod library importable without installing it.
+# (widgets lives next to this script and resolves via the script dir.)
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src" / "crover_mod"))
+
+from camera import (  # noqa: E402
+    FRAMESIZE_CHOICES,
+    CameraInfo,
+    CameraRegistry,
+    CameraStream,
+    set_camera_params,
+)
+from coefs import from_config as coefs_from_config  # noqa: E402
+from coefs import push_to_firmware as push_coefs  # noqa: E402
+from roverc import RoverCClient  # noqa: E402
+from telemetry import TelemetryPacket  # noqa: E402
+from telemetry import parse as parse_telemetry  # noqa: E402
+from widgets import Button, ChoiceRow, Slider  # noqa: E402
+
+KEY_VX = 1.0
+KEY_VY = 1.0
+KEY_WZ = 1.0
+
+INPUT_SIZE = (600, 372)
+BATTERY_STRIP_Y = 320
+BATTERY_STRIP_H = 44
+# Per-cell Li-ion thresholds for the front camera battery widget. The Timer
+# Camera X runs on a single 18650-style cell (~4.2V full, ~3.7V nominal,
+# ~3.0V dead). Pick GREEN/YELLOW/RED bands a bit conservative so the user
+# sees YELLOW before the camera actually browns out.
+CAM_VBAT_GREEN_MV = 3800
+CAM_VBAT_YELLOW_MV = 3500
+# StickC battery thresholds (% from M5.Power.getBatteryLevel()).
+STICK_PCT_GREEN = 30
+STICK_PCT_YELLOW = 10
+SETTINGS_SIZE = (820, 600)
+CAMERA_VIEW_SIZE = (320, 240)
+# Single front-facing monocular camera (no stereo, no fisheye).
+CAMERA_ROLES = ("front",)
+CAMERA_SIZE = (
+    CAMERA_VIEW_SIZE[0] * len(CAMERA_ROLES) + 16 * (len(CAMERA_ROLES) + 1) + 16,
+    CAMERA_VIEW_SIZE[1] + 96,
+)
+
+G_TO_MPS2 = 9.80665
+# Maximum estimated speed used to scale the est-velocity vector to half the HUD.
+EST_VEL_FULL_MPS = 0.5
+# Body-axis mapping from MPU6886 axes. Flip signs after empirical check on the
+# rover (push forward, observe whether vx_est goes positive). 0 = IMU x, 1 = y,
+# 2 = z. Forward positive = +x, left positive = +y.
+IMU_FWD_AXIS = 0
+IMU_FWD_SIGN = +1.0
+IMU_LEFT_AXIS = 1
+IMU_LEFT_SIGN = +1.0
+
+
+class LatestTelemetry:
+    """Single-slot thread-safe holder for the most recent TelemetryPacket.
+    Fed from RoverCClient's rx thread, read by the render loop for the
+    battery widgets."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._pkt: TelemetryPacket | None = None
+
+    def update(self, pkt: TelemetryPacket) -> None:
+        with self._lock:
+            self._pkt = pkt
+
+    def latest(self) -> TelemetryPacket | None:
+        with self._lock:
+            return self._pkt
+
+
+def _voltage_color(mv: int | None) -> tuple[int, int, int]:
+    if mv is None or mv <= 0:
+        return (110, 110, 120)
+    if mv >= CAM_VBAT_GREEN_MV:
+        return (90, 200, 140)
+    if mv >= CAM_VBAT_YELLOW_MV:
+        return (220, 200, 80)
+    return (220, 90, 90)
+
+
+def _stick_color(pct: int | None) -> tuple[int, int, int]:
+    if pct is None:
+        return (110, 110, 120)
+    if pct >= STICK_PCT_GREEN:
+        return (90, 200, 140)
+    if pct >= STICK_PCT_YELLOW:
+        return (220, 200, 80)
+    return (220, 90, 90)
+
+
+def _draw_battery_chip(
+    surface: pygame.Surface, rect: pygame.Rect,
+    label: str, value: str, sub: str,
+    accent: tuple[int, int, int],
+    label_font: pygame.font.Font, value_font: pygame.font.Font,
+) -> None:
+    pygame.draw.rect(surface, (40, 40, 52), rect, border_radius=6)
+    pygame.draw.rect(surface, accent, rect, width=2, border_radius=6)
+    surface.blit(label_font.render(label, True, (200, 200, 210)),
+                 (rect.x + 8, rect.y + 4))
+    surface.blit(value_font.render(value, True, accent),
+                 (rect.x + 8, rect.y + 18))
+    if sub:
+        sub_surf = label_font.render(sub, True, (180, 180, 195))
+        surface.blit(sub_surf,
+                     (rect.right - sub_surf.get_width() - 8, rect.y + 26))
+
+
+def draw_battery_strip(
+    surface: pygame.Surface, origin: tuple[int, int], size: tuple[int, int],
+    pkt: TelemetryPacket | None,
+    registry: CameraRegistry,
+    label_font: pygame.font.Font, value_font: pygame.font.Font,
+) -> None:
+    """3 chips across the strip: StickC, front cam, RoverC (proxied via
+    StickC isCharging)."""
+    ox, oy = origin
+    w, h = size
+    n = 3
+    gap = 6
+    chip_w = (w - gap * (n - 1)) // n
+
+    # StickC
+    if pkt is None:
+        stick_label, stick_val, stick_sub, stick_color = (
+            "Stick", "—", "no telem", (110, 110, 120)
+        )
+    else:
+        stick_color = _stick_color(pkt.bat_pct)
+        stick_val = f"{pkt.vbat_mv / 1000:.2f}V" if pkt.vbat_mv else "—"
+        stick_sub = f"{pkt.bat_pct}%" if pkt.bat_pct is not None else ""
+        if pkt.charging is True:
+            stick_sub = (stick_sub + " +").strip()
+        stick_label = "Stick"
+
+    chips: list[tuple[str, str, str, tuple[int, int, int]]] = [
+        (stick_label, stick_val, stick_sub, stick_color),
+    ]
+
+    # Front camera
+    info = registry.latest("front")
+    if info is None or info.vbat_mv is None or info.vbat_mv <= 0:
+        chips.append(("Cam", "—", "no probe", (110, 110, 120)))
+    else:
+        chips.append((
+            "Cam",
+            f"{info.vbat_mv / 1000:.2f}V",
+            "",
+            _voltage_color(info.vbat_mv),
+        ))
+
+    # RoverC (proxied). The StickC PMU's isCharging flag goes True when 5V is
+    # supplied on the HAT bus, which on this rig means RoverC is on. When the
+    # RoverC battery dies, 5V collapses and the flag flips to False. NOTE: this
+    # proxy is unreliable while the StickC is also USB-powered (during dev).
+    if pkt is None or pkt.charging is None:
+        chips.append(("Rover", "—", "no telem", (110, 110, 120)))
+    elif pkt.charging:
+        chips.append(("Rover", "OK", "via 5V", (90, 200, 140)))
+    else:
+        chips.append(("Rover", "DYING", "5V lost", (220, 90, 90)))
+
+    for i, (label, value, sub, accent) in enumerate(chips):
+        rx = ox + i * (chip_w + gap)
+        rect = pygame.Rect(rx, oy, chip_w, h)
+        _draw_battery_chip(surface, rect, label, value, sub, accent, label_font, value_font)
+
+
+class VelocityEstimator:
+    """Body-frame velocity estimator from MPU6886 accel telemetry.
+
+    Strategy:
+      - During idle (no key pressed) the gravity vector in body frame is
+        learned via slow EMA, and the integrated velocity is held at zero.
+      - During driven motion the gravity baseline is held, accel is corrected
+        by `a_corr = (a_raw - g_baseline) * G_TO_MPS2`, and v is integrated
+        with the trapezoidal rule using StickC fw_t_ms as the timebase.
+      - Velocity resets to zero on every idle re-entry. This bounds drift to
+        the duration of a single press.
+    """
+
+    GRAVITY_EMA = 0.02
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._g = (0.0, 0.0, 0.0)
+        self._g_init = False
+        self._last_t_ms: int | None = None
+        self._vx = 0.0
+        self._vy = 0.0
+        self._idle = True
+
+    def set_idle(self, idle: bool) -> None:
+        with self._lock:
+            if idle and not self._idle:
+                self._vx = 0.0
+                self._vy = 0.0
+            self._idle = idle
+
+    def on_packet(self, pkt: TelemetryPacket) -> None:
+        a = (pkt.ax_g, pkt.ay_g, pkt.az_g)
+        with self._lock:
+            if not self._g_init:
+                self._g = a
+                self._g_init = True
+            elif self._idle:
+                e = self.GRAVITY_EMA
+                self._g = (
+                    (1 - e) * self._g[0] + e * a[0],
+                    (1 - e) * self._g[1] + e * a[1],
+                    (1 - e) * self._g[2] + e * a[2],
+                )
+
+            t_ms = pkt.fw_t_ms
+            if self._last_t_ms is None:
+                self._last_t_ms = t_ms
+                return
+            dt_ms = (t_ms - self._last_t_ms) & 0xFFFFFFFF
+            self._last_t_ms = t_ms
+            if dt_ms == 0 or dt_ms > 1000:
+                return
+            dt = dt_ms / 1000.0
+            if not self._idle:
+                a_fwd = (a[IMU_FWD_AXIS] - self._g[IMU_FWD_AXIS]) * IMU_FWD_SIGN * G_TO_MPS2
+                a_left = (a[IMU_LEFT_AXIS] - self._g[IMU_LEFT_AXIS]) * IMU_LEFT_SIGN * G_TO_MPS2
+                self._vx += a_fwd * dt
+                self._vy += a_left * dt
+
+    def snapshot(self) -> tuple[float, float, bool]:
+        with self._lock:
+            return (self._vx, self._vy, self._g_init)
+
+
+class WindowPanel:
+    """Pairs an SDL2 Window+Renderer with an offscreen Surface for drawing."""
+
+    def __init__(self, title: str, size: tuple[int, int], position=None) -> None:
+        if position is not None:
+            self.window = Window(title, size=size, position=position)
+        else:
+            self.window = Window(title, size=size)
+        self.renderer = Renderer(self.window)
+        self.size = size
+        self.surface = pygame.Surface(size)
+
+    @property
+    def id(self) -> int:
+        return self.window.id
+
+    def present(self) -> None:
+        tex = Texture.from_surface(self.renderer, self.surface)
+        self.renderer.clear()
+        tex.draw()
+        self.renderer.present()
+
+
+def event_window_id(event: pygame.event.Event) -> int | None:
+    win = getattr(event, "window", None)
+    return getattr(win, "id", None) if win is not None else None
+
+
+def load_config(path: Path) -> dict:
+    with path.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def build_settings_layout() -> tuple[Button, ChoiceRow, Slider]:
+    margin = 16
+    full_w = SETTINGS_SIZE[0] - 2 * margin
+    half_w = (full_w - 12) // 2
+
+    apply_btn = Button(pygame.Rect(SETTINGS_SIZE[0] - 140, 12, 120, 32), "Apply")
+
+    cam_y = 64
+    cam_row_h = 28
+    qvga_index = next(
+        (i for i, (name, _, _) in enumerate(FRAMESIZE_CHOICES) if name == "QVGA"),
+        0,
+    )
+    framesize_choice = ChoiceRow(
+        pygame.Rect(margin, cam_y, half_w, cam_row_h),
+        "camera framesize",
+        [name for name, _, _ in FRAMESIZE_CHOICES],
+        selected_index=qvga_index,  # QVGA, matches firmware default
+    )
+    quality_slider = Slider(
+        pygame.Rect(margin + half_w + 12, cam_y + 8, half_w, 12),
+        "jpeg_quality", 4, 63, 30, step=1, fmt="{:.0f}",
+    )
+
+    return apply_btn, framesize_choice, quality_slider
+
+
+def draw_velocity_hud(
+    surface: pygame.Surface, origin: tuple[int, int], size: tuple[int, int],
+    vx: float, vy: float, wz: float,
+    vx_est: float, vy_est: float, est_ready: bool,
+    font: pygame.font.Font,
+) -> None:
+    ox, oy = origin
+    w, h = size
+    cx = ox + w // 2
+    cy = oy + h // 2
+
+    # Frame
+    pygame.draw.rect(surface, (40, 40, 52), pygame.Rect(ox, oy, w, h), border_radius=8)
+    pygame.draw.rect(surface, (80, 80, 95), pygame.Rect(ox, oy, w, h), width=2, border_radius=8)
+
+    # Cross axes
+    pygame.draw.line(surface, (70, 70, 80), (ox + 10, cy), (ox + w - 10, cy), 1)
+    pygame.draw.line(surface, (70, 70, 80), (cx, oy + 10, ), (cx, oy + h - 10), 1)
+
+    half = min(w, h) // 2 - 14
+
+    # Estimated body-frame velocity vector (orange). vx_est forward = up,
+    # vy_est left = left on screen.
+    est_color = (220, 140, 70) if est_ready else (110, 80, 60)
+    sx = max(-1.0, min(1.0, vx_est / EST_VEL_FULL_MPS))
+    sy = max(-1.0, min(1.0, vy_est / EST_VEL_FULL_MPS))
+    est_tip_x = cx - int(sy * half)
+    est_tip_y = cy - int(sx * half)
+    pygame.draw.line(surface, est_color, (cx, cy), (est_tip_x, est_tip_y), 3)
+    pygame.draw.circle(surface, est_color, (est_tip_x, est_tip_y), 5)
+
+    # Commanded vector tip (vx forward = up, green). Drawn on top so the
+    # operator's input always wins the foreground.
+    tip_x = cx + int(vy * half)
+    tip_y = cy - int(vx * half)
+    pygame.draw.line(surface, (90, 200, 140), (cx, cy), (tip_x, tip_y), 4)
+    pygame.draw.circle(surface, (240, 240, 240), (tip_x, tip_y), 6)
+
+    # wz arc indicator
+    if abs(wz) > 1e-3:
+        arc_rect = pygame.Rect(cx - 22, cy - 22, 44, 44)
+        if wz > 0:
+            pygame.draw.arc(surface, (220, 160, 60), arc_rect, 0, 1.6 * wz, 3)
+        else:
+            pygame.draw.arc(surface, (220, 160, 60), arc_rect, 1.6 * wz + 6.28, 6.28, 3)
+
+    # Numeric readout below
+    cmd_text = f"cmd vx={vx:+.2f}  vy={vy:+.2f}  wz={wz:+.2f}"
+    if est_ready:
+        est_text = f"est vx={vx_est:+.2f}  vy={vy_est:+.2f} m/s"
+    else:
+        est_text = "est ...waiting for telemetry..."
+    surface.blit(font.render(cmd_text, True, (220, 220, 220)), (ox + 8, oy + h + 6))
+    surface.blit(font.render(est_text, True, est_color), (ox + 8, oy + h + 22))
+
+
+def render_input(
+    panel: WindowPanel, host: str, port: int, rate_hz: int,
+    pressed: set[int], vx: float, vy: float, wz: float,
+    vx_est: float, vy_est: float, est_ready: bool,
+    last_apply_t: float, dirty: bool, focused: bool,
+    apply_btn: Button, big_font: pygame.font.Font, font: pygame.font.Font,
+    latest_pkt: TelemetryPacket | None, camera_registry: CameraRegistry,
+) -> None:
+    s = panel.surface
+    s.fill((20, 20, 28))
+
+    header = [
+        f"target  : udp {host}:{port}    rate {rate_hz} Hz",
+        "WASD vx/vy   QE wz   Space stop   Enter apply   Esc quit",
+        f"applied : {time.time() - last_apply_t:4.1f}s ago" if last_apply_t else "applied : (never)",
+    ]
+    color = (220, 220, 220) if focused else (150, 150, 160)
+    for i, line in enumerate(header):
+        s.blit(big_font.render(line, True, color), (16, 12 + i * 20))
+
+    focus_label = "[focused]" if focused else "[click to focus]"
+    s.blit(font.render(focus_label, True, (200, 220, 140) if focused else (200, 120, 60)),
+           (INPUT_SIZE[0] - 140, 14))
+
+    draw_velocity_hud(
+        s, (16, 100), (200, 160), vx, vy, wz, vx_est, vy_est, est_ready, font,
+    )
+
+    # Pressed-key chips
+    chips_x = 240
+    chips_y = 100
+    chip_w = 40
+    chip_h = 28
+    layout = {
+        "W": (1, 0), "A": (0, 1), "S": (1, 1), "D": (2, 1),
+        "Q": (3, 0), "E": (4, 0),
+    }
+    key_const = {
+        "W": pygame.K_w, "A": pygame.K_a, "S": pygame.K_s, "D": pygame.K_d,
+        "Q": pygame.K_q, "E": pygame.K_e,
+    }
+    for label, (col, row) in layout.items():
+        rx = chips_x + col * (chip_w + 6)
+        ry = chips_y + row * (chip_h + 6)
+        active = key_const[label] in pressed
+        bg = (90, 170, 110) if active else (50, 50, 60)
+        pygame.draw.rect(s, bg, pygame.Rect(rx, ry, chip_w, chip_h), border_radius=4)
+        txt = big_font.render(label, True, (240, 240, 240))
+        s.blit(txt, txt.get_rect(center=(rx + chip_w // 2, ry + chip_h // 2)))
+
+    apply_btn.draw(s, big_font, accent=dirty)
+
+    draw_battery_strip(
+        s, (16, BATTERY_STRIP_Y), (INPUT_SIZE[0] - 32, BATTERY_STRIP_H),
+        latest_pkt, camera_registry, font, big_font,
+    )
+
+
+def render_settings(
+    panel: WindowPanel, apply_btn: Button, dirty: bool,
+    framesize_choice: ChoiceRow, quality_slider: Slider, cam_status: str,
+    title_font: pygame.font.Font, big_font: pygame.font.Font, font: pygame.font.Font,
+) -> None:
+    s = panel.surface
+    s.fill((20, 20, 28))
+
+    s.blit(title_font.render("camera settings", True, (220, 220, 220)), (16, 14))
+    s.blit(font.render("(mouse-only; keyboard input goes to the input window)", True, (160, 160, 170)),
+           (16, 40))
+
+    apply_btn.draw(s, big_font, accent=dirty)
+    framesize_choice.draw(s, font)
+    quality_slider.draw(s, font)
+    if cam_status:
+        s.blit(
+            font.render(cam_status, True, (180, 180, 195)),
+            (16, framesize_choice.rect.bottom + 6),
+        )
+
+
+def render_cameras(
+    panel: WindowPanel,
+    title_font: pygame.font.Font, info_font: pygame.font.Font,
+    big_font: pygame.font.Font,
+    registry: CameraRegistry,
+    stream_states: dict[str, dict],
+) -> None:
+    s = panel.surface
+    s.fill((20, 20, 28))
+
+    margin = 16
+    y = 16
+    panel_h = CAMERA_SIZE[1] - 32
+    panel_w = (CAMERA_SIZE[0] - margin * (len(CAMERA_ROLES) + 1)) // len(CAMERA_ROLES)
+    panels = {
+        role: pygame.Rect(
+            margin + (panel_w + margin) * i, y, panel_w, panel_h,
+        )
+        for i, role in enumerate(CAMERA_ROLES)
+    }
+
+    for role in CAMERA_ROLES:
+        prect = panels[role]
+        pygame.draw.rect(s, (80, 80, 95), prect, width=2, border_radius=6)
+        s.blit(title_font.render(f"camera ({role})", True, (255, 220, 150)),
+               (prect.x + 12, prect.y + 8))
+
+        info = registry.latest(role)
+        image_origin = (prect.x + 10, prect.y + 36)
+        view_rect = pygame.Rect(image_origin, CAMERA_VIEW_SIZE)
+        pygame.draw.rect(s, (10, 10, 14), view_rect)
+
+        status_lines: list[str] = []
+        if info is None:
+            status_lines.append(f"waiting for {role} (StickC I2C probe)...")
+        else:
+            age_s = time.monotonic() - info.last_seen_monotonic
+            status_lines.append(f"http: {info.ip}:{info.http_port}{info.jpg_path}")
+            status_lines.append(f"seen: {age_s:.1f}s ago  cam_ok={info.camera_ok}")
+
+        state = stream_states[role]
+        stream: CameraStream | None = state.get("stream")
+        surface: pygame.Surface | None = state.get("surface")
+        last_frame_count: int = state.get("last_frame_count", 0)
+        recent_ts: list[float] = state.get("recent_ts", [])
+        freeze_events: list[tuple[float, float]] = state.get("freeze_events", [])
+        fps_1s = 0.0
+        err_count = 0
+        max_gap_30s = 0.0
+        freezes_30s = 0
+        current_gap_s = 0.0
+        FREEZE_THRESHOLD = 1.0
+        WINDOW_S = 30.0
+
+        if stream is not None:
+            jpeg, frame_count, last_fetch_t, last_error, err_count = stream.latest()
+            now = time.monotonic()
+            if jpeg is not None and frame_count != last_frame_count:
+                try:
+                    decoded = pygame.image.load(io.BytesIO(jpeg))
+                    if decoded.get_size() != CAMERA_VIEW_SIZE:
+                        decoded = pygame.transform.smoothscale(decoded, CAMERA_VIEW_SIZE)
+                    surface = decoded
+                    state["surface"] = surface
+                    if recent_ts:
+                        gap = now - recent_ts[-1]
+                        if gap >= FREEZE_THRESHOLD:
+                            freeze_events.append((now, gap))
+                    recent_ts.append(now)
+                    state["last_frame_count"] = frame_count
+                except (pygame.error, ValueError) as exc:
+                    status_lines.append(f"decode error: {exc}")
+
+            cutoff = now - WINDOW_S
+            recent_ts = [t for t in recent_ts if t >= cutoff]
+            freeze_events = [(t, g) for (t, g) in freeze_events if t >= cutoff]
+            state["recent_ts"] = recent_ts
+            state["freeze_events"] = freeze_events
+
+            cutoff_1s = now - 1.0
+            fps_1s = float(sum(1 for t in recent_ts if t >= cutoff_1s))
+
+            if recent_ts:
+                gaps = [recent_ts[i] - recent_ts[i - 1] for i in range(1, len(recent_ts))]
+                current_gap_s = now - recent_ts[-1]
+                max_gap_30s = max(gaps + [current_gap_s], default=0.0)
+            else:
+                max_gap_30s = 0.0
+            freezes_30s = len(freeze_events)
+
+            if last_fetch_t is not None:
+                stale = now - last_fetch_t
+                status_lines.append(f"fetch: {stale*1000:.0f}ms ago")
+            else:
+                status_lines.append("fetch: pending")
+            status_lines.append(
+                f"30s: max_gap={max_gap_30s:.1f}s  freezes(>1s)={freezes_30s}"
+            )
+            if last_error is not None:
+                status_lines.append(f"err : {last_error[:40]}")
+
+        if surface is not None:
+            s.blit(surface, image_origin)
+
+        # Big top-right HUD: live freeze indicator (red when current gap >0.5s)
+        # plus rolling 30s freeze stats. Designed to make "did 8MHz help?"
+        # answerable from numbers alone.
+        if current_gap_s >= 0.5:
+            live_color = (220, 90, 90)
+            live_text = f"FROZEN {current_gap_s:.1f}s"
+        else:
+            live_color = (220, 220, 220)
+            live_text = f"{fps_1s:>2.0f} fps"
+        live_surf = big_font.render(live_text, True, live_color)
+        s.blit(live_surf, (prect.right - live_surf.get_width() - 12, prect.y + 8))
+
+        stats_text = f"30s: {freezes_30s} freezes  max {max_gap_30s:.1f}s  err {err_count}"
+        stats_color = (220, 90, 90) if freezes_30s > 0 else (180, 200, 180)
+        stats_surf = info_font.render(stats_text, True, stats_color)
+        s.blit(stats_surf, (prect.right - stats_surf.get_width() - 12, prect.y + 28))
+
+        text_y = view_rect.bottom + 10
+        for line in status_lines:
+            s.blit(info_font.render(line, True, (200, 200, 210)),
+                   (prect.x + 12, text_y))
+            text_y += 16
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--config",
+        default=str(Path(__file__).resolve().parents[2] / "config.json"),
+        help="Path to config.json (default: repo-root/config.json)",
+    )
+    parser.add_argument("--host", default=None, help="Server IP shown on the StickC LCD.")
+    args = parser.parse_args()
+
+    cfg = load_config(Path(args.config))
+    port = int(cfg["server"]["port"])
+    rate_hz = int(cfg["control"]["rate_hz"])
+
+    host = args.host or input("server IP (from StickC LCD): ").strip()
+    if not host:
+        print("host is required", file=sys.stderr)
+        return 2
+
+    estimator = VelocityEstimator()
+    latest_telemetry = LatestTelemetry()
+
+    def _on_telemetry(raw: bytes) -> None:
+        pkt = parse_telemetry(raw)
+        if pkt is not None:
+            estimator.on_packet(pkt)
+            latest_telemetry.update(pkt)
+
+    camera_registry = CameraRegistry()
+    client = RoverCClient(
+        host, port, camera_registry=camera_registry, on_telemetry=_on_telemetry,
+    )
+
+    # Register sender (StickC pushes telemetry to the last UDP src) and turn
+    # telemetry on so the velocity estimator gets fed.
+    client.send_motion(0.0, 0.0, 0.0)
+    time.sleep(0.05)
+    client.send_config_dict({"tel": True})
+
+    # Build the motor coefficient table from config.json's [motor] section and
+    # blast it to the firmware. Manual slider tweaks below still write the
+    # constant a[0][0] term of STEADY/KICK cells via the JSON cfg path.
+    coefs = coefs_from_config(cfg)
+    n_sent = push_coefs(coefs, client.send_poly_chunk, client.send_config_dict)
+    print(f"pushed {n_sent} polynomial chunks from {args.config} [motor]")
+
+    pygame.init()
+    pygame.display.init()
+
+    input_panel = WindowPanel(
+        f"RoverC input -> {host}:{port}", INPUT_SIZE, position=(80, 80),
+    )
+    settings_panel = WindowPanel(
+        "RoverC settings", SETTINGS_SIZE, position=(80 + INPUT_SIZE[0] + 16, 80),
+    )
+    camera_panel = WindowPanel(
+        "RoverC cameras", CAMERA_SIZE, position=(80, 80 + INPUT_SIZE[1] + 40),
+    )
+
+    font = pygame.font.SysFont("monospace", 13)
+    big_font = pygame.font.SysFont("monospace", 16)
+    title_font = pygame.font.SysFont("monospace", 18, bold=True)
+    clock = pygame.time.Clock()
+
+    settings_apply_btn, framesize_choice, quality_slider = build_settings_layout()
+    input_apply_btn = Button(
+        pygame.Rect(INPUT_SIZE[0] - 132, BATTERY_STRIP_Y - 46, 116, 36), "Apply",
+    )
+
+    stream_states: dict[str, dict] = {
+        role: {
+            "stream": None,
+            "surface": None,
+            "last_frame_count": 0,
+            # Frame arrival timestamps within the last 30s window.
+            "recent_ts": [],
+            # (time, gap_s) for inter-frame gaps >= FREEZE_THRESHOLD in the
+            # last 30s. Used for the freeze count / max-gap HUD.
+            "freeze_events": [],
+        }
+        for role in CAMERA_ROLES
+    }
+
+    key_axis = {
+        pygame.K_w: ("vx", +KEY_VX),
+        pygame.K_s: ("vx", -KEY_VX),
+        pygame.K_d: ("vy", +KEY_VY),
+        pygame.K_a: ("vy", -KEY_VY),
+        pygame.K_q: ("wz", -KEY_WZ),
+        pygame.K_e: ("wz", +KEY_WZ),
+    }
+
+    pressed: set[int] = set()
+    dirty = True
+    last_apply_t = 0.0
+    cam_status = "(not pushed yet)"
+    focused_id: int | None = input_panel.id
+    running = True
+
+    def do_apply() -> None:
+        nonlocal dirty, last_apply_t, cam_status
+        # Camera /control: the firmware's sync WebServer cannot serve /control
+        # while a /stream client is connected, so stop active streams first
+        # and let the auto-start loop reopen /stream on the next render tick.
+        idx = framesize_choice.selected_index
+        fs_name, fs_value, fs_dim = FRAMESIZE_CHOICES[idx]
+        q = int(quality_slider.value)
+        for role in CAMERA_ROLES:
+            state = stream_states[role]
+            stream: CameraStream | None = state.get("stream")
+            if stream is not None:
+                stream.stop()
+                stream.join(timeout=2.0)
+                state["stream"] = None
+        # Brief pause so the camera firmware exits handle_stream and main
+        # loop re-accepts before we hit /control.
+        time.sleep(0.1)
+        results: list[str] = []
+        for role in CAMERA_ROLES:
+            info: CameraInfo | None = camera_registry.latest(role)
+            if info is None or not info.camera_ok:
+                results.append(f"{role}:none")
+                continue
+            ok, body = set_camera_params(info, framesize=fs_value, quality=q)
+            tag = "ok" if ok else "err"
+            results.append(f"{role}:{tag}")
+            print(f"camera {role} /control fs={fs_value} q={q} -> {tag} | {body}")
+        cam_status = (
+            f"cam fs={fs_name}({fs_dim[0]}x{fs_dim[1]}) q={q}  "
+            + " ".join(results)
+        )
+
+        dirty = False
+        last_apply_t = time.time()
+
+    while running:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+                continue
+            if event.type == pygame.WINDOWCLOSE:
+                running = False
+                continue
+            if event.type == pygame.WINDOWFOCUSGAINED:
+                focused_id = event_window_id(event)
+                continue
+            if event.type == pygame.WINDOWFOCUSLOST:
+                wid = event_window_id(event)
+                if wid == input_panel.id:
+                    pressed.clear()
+                continue
+
+            wid = event_window_id(event)
+
+            if event.type == pygame.KEYDOWN and wid == input_panel.id:
+                if event.key == pygame.K_ESCAPE:
+                    running = False
+                elif event.key == pygame.K_SPACE:
+                    pressed.clear()
+                elif event.key == pygame.K_RETURN:
+                    do_apply()
+                elif event.key in key_axis:
+                    pressed.add(event.key)
+                continue
+            if event.type == pygame.KEYUP and wid == input_panel.id:
+                pressed.discard(event.key)
+                continue
+
+            # Mouse: route to widgets in whichever window the cursor is over.
+            if wid == settings_panel.id:
+                if settings_apply_btn.handle_event(event):
+                    do_apply()
+                if framesize_choice.handle_event(event):
+                    dirty = True
+                if quality_slider.handle_event(event):
+                    dirty = True
+            elif wid == input_panel.id:
+                if input_apply_btn.handle_event(event):
+                    do_apply()
+
+        vx = sum(amount for k, (axis, amount) in key_axis.items() if axis == "vx" and k in pressed)
+        vy = sum(amount for k, (axis, amount) in key_axis.items() if axis == "vy" and k in pressed)
+        wz = sum(amount for k, (axis, amount) in key_axis.items() if axis == "wz" and k in pressed)
+        client.send_motion(vx, vy, wz)
+
+        estimator.set_idle(not pressed)
+        vx_est, vy_est, est_ready = estimator.snapshot()
+
+        # Auto-start camera streams when StickC reports them.
+        for role in CAMERA_ROLES:
+            state = stream_states[role]
+            if state["stream"] is None:
+                info = camera_registry.latest(role)
+                if info is not None and info.camera_ok:
+                    stream = CameraStream(info)
+                    stream.start()
+                    state["stream"] = stream
+                    print(f"camera discovered ({role}): {info.ip}:{info.http_port}")
+
+        render_input(
+            input_panel, host, port, rate_hz, pressed, vx, vy, wz,
+            vx_est, vy_est, est_ready,
+            last_apply_t, dirty, focused_id == input_panel.id,
+            input_apply_btn, big_font, font,
+            latest_telemetry.latest(), camera_registry,
+        )
+        render_settings(
+            settings_panel, settings_apply_btn, dirty,
+            framesize_choice, quality_slider, cam_status,
+            title_font, big_font, font,
+        )
+        render_cameras(camera_panel, title_font, font, big_font, camera_registry, stream_states)
+
+        input_panel.present()
+        settings_panel.present()
+        camera_panel.present()
+
+        clock.tick(rate_hz)
+
+    client.send_stop()
+    client.close()
+    for state in stream_states.values():
+        if state["stream"] is not None:
+            state["stream"].stop()
+    pygame.quit()
+    print("stopped")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

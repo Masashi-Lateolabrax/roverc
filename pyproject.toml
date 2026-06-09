@@ -1,0 +1,31 @@
+[project]
+name = "roverc"
+version = "0.1.0"
+requires-python = ">=3.9"
+dependencies = [
+    "pygame>=2.6.1",
+    "opencv-python>=4.10",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.6",
+    "pyright>=1.1.380",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+src = ["src/crover_mod", "examples/teleop", "examples/motor_tuner", "scripts"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = [
+    "E501",  # line-length handled by formatter, not the linter
+]
+
+[tool.pyright]
+include = ["src/crover_mod", "examples/teleop", "examples/motor_tuner", "scripts"]
+extraPaths = ["src/crover_mod"]
+pythonVersion = "3.9"
+reportMissingImports = "warning"
