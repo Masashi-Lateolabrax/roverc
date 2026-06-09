@@ -4,6 +4,7 @@
 Usage:
     uv run src/move_and_turn_example.py --host 192.168.1.123   # StickC Plus2 IP
 """
+
 from __future__ import annotations
 
 import argparse

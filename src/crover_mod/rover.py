@@ -83,7 +83,9 @@ class Rover:
         norm = math.hypot(vx, vy)
         if norm > 1.0:
             vx, vy = vx / norm, vy / norm
-        wz = max(-1.0, min(1.0, float(turn)))
+        # Firmware mixing makes wz > 0 spin clockwise; negate so the API's
+        # turn > 0 means CCW (standard right-hand convention).
+        wz = -max(-1.0, min(1.0, float(turn)))
         with self._target_lock:
             self._target = (vx, vy, wz)
 
