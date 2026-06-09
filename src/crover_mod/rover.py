@@ -3,9 +3,10 @@
 `Rover` wraps the UDP control client, camera discovery, and the MJPEG stream
 behind a small surface:
 
-    rover = Rover("192.168.1.123")   # StickC Plus2 IP
-    rover.move(vx=0.5, wz=0.0)       # drive
-    img = rover.get_camera()         # latest front-camera frame as a BGR ndarray
+    config = Config("config.json")
+    rover = Rover("192.168.1.123", config)   # host = StickC Plus2 IP
+    rover.move((1.0, 0.0), turn=0.0)         # drive forward at full output
+    img = rover.get_camera()                 # latest front-camera frame as a BGR ndarray
     rover.stop()
     rover.close()
 
@@ -22,36 +23,29 @@ import socket
 import threading
 import time
 from dataclasses import replace
-from pathlib import Path
 from typing import TYPE_CHECKING
 
-from camera import CameraRegistry, CameraStream
+from camera import CameraRegistry, CameraStream, set_camera_params
 from roverc import RoverCClient
 
 if TYPE_CHECKING:
     import numpy as np
 
-# repo-root/config.json, resolved relative to this file (src/crover_mod/).
-_DEFAULT_CONFIG = Path(__file__).resolve().parents[2] / "config.json"
+    from config import Config
 
 
 class Rover:
-    def __init__(
-        self,
-        host: str,
-        max_throttle: float,
-        port: int = 4210,
-        announce_port: int = 4211,
-    ) -> None:
+    def __init__(self, host: str, config: Config) -> None:
         self.host = host
-        # Upper bound on the normalized drive command (throttle) in [0, 1]. This
-        # is NOT a physical velocity: the firmware mecanum-mixes it and scales by
-        # config motor.max_motor to an int8 motor value. Actual m/s is
-        # uncalibrated (depends on battery / surface / load).
-        self.max_throttle = max_throttle
-        self.port = port
+        self.config = config
+        self.port = config.port
+        # Camera framesize / JPEG quality from config.json's camera section,
+        # pushed to the camera once its stream first opens. None leaves the
+        # firmware default untouched.
+        self._cam_framesize = config.camera_framesize
+        self._cam_quality = config.camera_quality
         self._registry = CameraRegistry()
-        self._client = RoverCClient(host, port, camera_registry=self._registry)
+        self._client = RoverCClient(host, self.port, camera_registry=self._registry)
         self._streams: dict[str, CameraStream] = {}
         self._closed = False
         # Current motion setpoint, resent continuously so the firmware failsafe
@@ -67,7 +61,7 @@ class Rover:
         # without the StickC relaying camera state.
         self._announce_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._announce_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self._announce_sock.bind(("", announce_port))
+        self._announce_sock.bind(("", config.announce_port))
         self._announce_sock.settimeout(0.5)
         self._announce_thread = threading.Thread(
             target=self._announce_loop, name="RoverAnnounce", daemon=True
@@ -80,20 +74,18 @@ class Rover:
         """Set the motion setpoint: translate along `direction = (x, y)`
         (x forward, y strafe-left; a 2-tuple or length-2 numpy array) while
         rotating at `turn` (> 0 = CCW). Both can be nonzero at once, so the
-        rover arcs. `direction`'s length and `turn` are throttle fractions
-        (clamped to 1), each scaled by max_throttle. Returns immediately; the
-        setpoint is held (and resent) until the next move()/stop()."""
+        rover arcs. `direction`'s length and `turn` are fractions of full motor
+        output: a norm of 1 (or more, capped to 1) is full output, which the
+        firmware mecanum-mixes and scales by config motor.max_motor. Returns
+        immediately; the setpoint is held (and resent) until the next
+        move()/stop()."""
         vx, vy = float(direction[0]), float(direction[1])
         norm = math.hypot(vx, vy)
         if norm > 1.0:
             vx, vy = vx / norm, vy / norm
         wz = max(-1.0, min(1.0, float(turn)))
         with self._target_lock:
-            self._target = (
-                vx * self.max_throttle,
-                vy * self.max_throttle,
-                wz * self.max_throttle,
-            )
+            self._target = (vx, vy, wz)
 
     def stop(self) -> None:
         with self._target_lock:
@@ -107,15 +99,12 @@ class Rover:
             self._client.send_motion(vx, vy, wz)
             time.sleep(0.02)  # 50 Hz, well inside the ~200 ms firmware failsafe
 
-    def push_motor_config(self, config_path: str | Path | None = None) -> int:
-        """Load config.json's motor section and push the coefficient table to
-        the firmware. Returns the number of chunk transmissions."""
+    def push_motor_config(self) -> int:
+        """Push the motor coefficient table from config to the firmware.
+        Returns the number of chunk transmissions."""
         from coefs import from_config, push_to_firmware
 
-        path = Path(config_path) if config_path is not None else _DEFAULT_CONFIG
-        with open(path) as f:
-            cfg = json.load(f)
-        coefs = from_config(cfg)
+        coefs = from_config(self.config.raw)
         return push_to_firmware(
             coefs, self._client.send_poly_chunk, self._client.send_config_dict
         )
@@ -142,6 +131,12 @@ class Rover:
         info = self._registry.latest(role)
         if info is None:
             return None
+        # Apply the configured framesize / quality before streaming so the very
+        # first frame already matches config.json.
+        if self._cam_framesize is not None or self._cam_quality is not None:
+            set_camera_params(
+                info, framesize=self._cam_framesize, quality=self._cam_quality
+            )
         # The announce advertises /jpg (single shot); we want the MJPEG /stream.
         stream = CameraStream(replace(info, jpg_path="/stream"))
         stream.start()

@@ -41,6 +41,17 @@ FRAMESIZE_CHOICES: tuple[tuple[str, int, tuple[int, int]], ...] = (
 )
 
 
+def framesize_from_name(name: str) -> int:
+    """Resolve a framesize name (e.g. "VGA", case-insensitive) to its wire
+    integer. Raises ValueError naming the valid choices if unknown."""
+    want = name.strip().upper()
+    for label, value, _wh in FRAMESIZE_CHOICES:
+        if label.upper() == want:
+            return value
+    choices = ", ".join(label for label, _v, _wh in FRAMESIZE_CHOICES)
+    raise ValueError(f"unknown framesize {name!r}; choose one of: {choices}")
+
+
 @dataclass(frozen=True)
 class CameraInfo:
     role: str

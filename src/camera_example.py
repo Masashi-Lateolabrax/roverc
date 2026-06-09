@@ -14,6 +14,7 @@ import cv2
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "crover_mod"))
 
+from config import Config  # noqa: E402
 from rover import Rover  # noqa: E402
 
 
@@ -22,7 +23,8 @@ def main() -> int:
     ap.add_argument("--host", required=True, help="StickC Plus2 IP")
     args = ap.parse_args()
 
-    rover = Rover(args.host)
+    config = Config("config.json")
+    rover = Rover(args.host, config)
     print("waiting for camera... (Esc or q to quit)")
     try:
         while True:

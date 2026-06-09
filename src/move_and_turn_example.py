@@ -13,6 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "crover_mod"))
 
+from config import Config  # noqa: E402
 from rover import Rover  # noqa: E402
 
 
@@ -21,14 +22,15 @@ def main() -> int:
     ap.add_argument("--host", required=True, help="StickC Plus2 IP")
     args = ap.parse_args()
 
-    rover = Rover(args.host, max_throttle=0.5)
+    config = Config("config.json")
+    rover = Rover(args.host, config)
     rover.push_motor_config()
     print("forward 3 s / spin 2 s, repeating (Ctrl-C to stop)")
     try:
         while True:
-            rover.move((1.0, 0.0), turn=0.0)  # forward, no rotation
+            rover.move((0.5, 0.0), turn=0.0)  # forward at half output, no rotation
             time.sleep(3)
-            rover.move((0.0, 0.0), turn=1.0)  # spin in place (> 0 = CCW)
+            rover.move((0.0, 0.0), turn=0.5)  # spin in place (> 0 = CCW)
             time.sleep(2)
     except KeyboardInterrupt:
         pass
