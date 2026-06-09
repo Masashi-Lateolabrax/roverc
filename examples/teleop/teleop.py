@@ -3,8 +3,11 @@
 
 Three pygame windows (SDL2 multi-window):
   - Input: capture WASD/QE keystrokes; only active when this window has focus
-  - Settings: per-wheel trim / kick sliders + globals; mouse-driven
+  - Settings: camera framesize / quality; mouse-driven
   - Cameras: the single front monocular JPEG stream
+
+Motor characteristics are not tuned here — they come solely from
+config.json's [motor] section, pushed to the firmware once at startup.
 
 Usage:
     uv run examples/teleop/teleop.py --host 192.168.1.123
@@ -33,7 +36,7 @@ from camera import (  # noqa: E402
     CameraStream,
     set_camera_params,
 )
-from coefs import load_json as load_coefs_json  # noqa: E402
+from coefs import from_config as coefs_from_config  # noqa: E402
 from coefs import push_to_firmware as push_coefs  # noqa: E402
 from roverc import RoverCClient  # noqa: E402
 from telemetry import TelemetryPacket  # noqa: E402
@@ -43,14 +46,6 @@ from widgets import Button, ChoiceRow, Slider  # noqa: E402
 KEY_VX = 1.0
 KEY_VY = 1.0
 KEY_WZ = 1.0
-
-TRIM_KEYS = ("front_left", "front_right", "rear_left", "rear_right")
-TRIM_GRID_POS = {
-    "front_left": (0, 0),
-    "front_right": (1, 0),
-    "rear_left": (0, 1),
-    "rear_right": (1, 1),
-}
 
 INPUT_SIZE = (600, 372)
 BATTERY_STRIP_Y = 320
@@ -299,94 +294,31 @@ def load_config(path: Path) -> dict:
         return json.load(f)
 
 
-def push_config(client: RoverCClient, sliders: dict[str, Slider]) -> None:
-    client.send_config(
-        max_motor=int(sliders["max_motor"].value),
-        kick_dur_ms=int(sliders["kick_dur_ms"].value),
-        trim_fwd=[sliders[f"{k}.trim_fwd"].value for k in TRIM_KEYS],
-        trim_bwd=[sliders[f"{k}.trim_bwd"].value for k in TRIM_KEYS],
-        kick_fwd=[sliders[f"{k}.kick_fwd"].value for k in TRIM_KEYS],
-        kick_bwd=[sliders[f"{k}.kick_bwd"].value for k in TRIM_KEYS],
-    )
-
-
-def build_settings_layout(initial_max: int, initial_trim: list[float]) -> tuple[
-    dict[str, Slider], dict[str, pygame.Rect], Button, ChoiceRow, Slider
-]:
+def build_settings_layout() -> tuple[Button, ChoiceRow, Slider]:
     margin = 16
     full_w = SETTINGS_SIZE[0] - 2 * margin
     half_w = (full_w - 12) // 2
-    sliders: dict[str, Slider] = {}
 
     apply_btn = Button(pygame.Rect(SETTINGS_SIZE[0] - 140, 12, 120, 32), "Apply")
 
-    globals_y = 64
-    sliders["max_motor"] = Slider(
-        pygame.Rect(margin, globals_y, half_w, 12),
-        "max_motor", 0, 127, initial_max, step=1, fmt="{:.0f}",
-    )
-    sliders["kick_dur_ms"] = Slider(
-        pygame.Rect(margin + half_w + 12, globals_y, half_w, 12),
-        "kick_duration_ms", 0, 500, 100, step=10, fmt="{:.0f}",
-    )
-
-    cam_y = globals_y + 36
+    cam_y = 64
     cam_row_h = 28
-    cam_choice_w = half_w
     qvga_index = next(
         (i for i, (name, _, _) in enumerate(FRAMESIZE_CHOICES) if name == "QVGA"),
         0,
     )
     framesize_choice = ChoiceRow(
-        pygame.Rect(margin, cam_y, cam_choice_w, cam_row_h),
+        pygame.Rect(margin, cam_y, half_w, cam_row_h),
         "camera framesize",
         [name for name, _, _ in FRAMESIZE_CHOICES],
         selected_index=qvga_index,  # QVGA, matches firmware default
     )
     quality_slider = Slider(
-        pygame.Rect(margin + cam_choice_w + 12, cam_y + 8, half_w, 12),
+        pygame.Rect(margin + half_w + 12, cam_y + 8, half_w, 12),
         "jpeg_quality", 4, 63, 30, step=1, fmt="{:.0f}",
     )
 
-    grid_top = cam_y + cam_row_h + 16
-    grid_bottom = SETTINGS_SIZE[1] - margin
-    grid_height = grid_bottom - grid_top
-    quad_w = (full_w - 12) // 2
-    quad_h = (grid_height - 12) // 2
-    quad_origin = {
-        (0, 0): (margin, grid_top),
-        (1, 0): (margin + quad_w + 12, grid_top),
-        (0, 1): (margin, grid_top + quad_h + 12),
-        (1, 1): (margin + quad_w + 12, grid_top + quad_h + 12),
-    }
-    quad_rects: dict[str, pygame.Rect] = {}
-
-    for i, key in enumerate(TRIM_KEYS):
-        col, row = TRIM_GRID_POS[key]
-        qx, qy = quad_origin[(col, row)]
-        quad_rects[key] = pygame.Rect(qx, qy, quad_w, quad_h)
-
-        inner_x = qx + 12
-        inner_top = qy + 36
-        col_w = (quad_w - 36) // 2
-        col_gap = 12
-        row1_y = inner_top + 16
-        row2_y = inner_top + 16 + 50
-        seed = initial_trim[i]
-        sliders[f"{key}.trim_fwd"] = Slider(
-            pygame.Rect(inner_x, row1_y, col_w, 10), "fwd", 0.0, 2.0, seed, step=0.05,
-        )
-        sliders[f"{key}.trim_bwd"] = Slider(
-            pygame.Rect(inner_x + col_w + col_gap, row1_y, col_w, 10), "bwd", 0.0, 2.0, seed, step=0.05,
-        )
-        sliders[f"{key}.kick_fwd"] = Slider(
-            pygame.Rect(inner_x, row2_y, col_w, 10), "kick fwd", 0.0, 3.0, seed, step=0.05,
-        )
-        sliders[f"{key}.kick_bwd"] = Slider(
-            pygame.Rect(inner_x + col_w + col_gap, row2_y, col_w, 10), "kick bwd", 0.0, 3.0, seed, step=0.05,
-        )
-
-    return sliders, quad_rects, apply_btn, framesize_choice, quality_slider
+    return apply_btn, framesize_choice, quality_slider
 
 
 def draw_velocity_hud(
@@ -504,27 +436,18 @@ def render_input(
 
 
 def render_settings(
-    panel: WindowPanel, sliders: dict[str, Slider], quad_rects: dict[str, pygame.Rect],
-    apply_btn: Button, dirty: bool,
+    panel: WindowPanel, apply_btn: Button, dirty: bool,
     framesize_choice: ChoiceRow, quality_slider: Slider, cam_status: str,
     title_font: pygame.font.Font, big_font: pygame.font.Font, font: pygame.font.Font,
 ) -> None:
     s = panel.surface
     s.fill((20, 20, 28))
 
-    s.blit(title_font.render("settings", True, (220, 220, 220)), (16, 14))
+    s.blit(title_font.render("camera settings", True, (220, 220, 220)), (16, 14))
     s.blit(font.render("(mouse-only; keyboard input goes to the input window)", True, (160, 160, 170)),
            (16, 40))
 
-    for key in TRIM_KEYS:
-        r = quad_rects[key]
-        pygame.draw.rect(s, (80, 80, 95), r, width=2, border_radius=6)
-        s.blit(title_font.render(key, True, (255, 220, 150)), (r.x + 12, r.y + 8))
-
-    for sl in sliders.values():
-        sl.draw(s, font)
     apply_btn.draw(s, big_font, accent=dirty)
-
     framesize_choice.draw(s, font)
     quality_slider.draw(s, font)
     if cam_status:
@@ -670,39 +593,11 @@ def main() -> int:
         help="Path to config.json (default: repo-root/config.json)",
     )
     parser.add_argument("--host", default=None, help="Server IP shown on the StickC LCD.")
-    parser.add_argument("--max-motor", type=int, default=None)
-    parser.add_argument(
-        "--trim",
-        default=None,
-        help='Initial steady trim "FL,FR,RL,RR" (applied to both directions and kicks).',
-    )
-    parser.add_argument(
-        "--coefs",
-        type=Path,
-        default=None,
-        help="Polynomial coefficient JSON to push to the firmware at startup. "
-             "Produced by scripts/make_identity_coefs.py.",
-    )
     args = parser.parse_args()
 
     cfg = load_config(Path(args.config))
     port = int(cfg["server"]["port"])
     rate_hz = int(cfg["control"]["rate_hz"])
-    initial_max = (
-        args.max_motor if args.max_motor is not None else int(cfg["control"]["max_motor"])
-    )
-    if not 0 <= initial_max <= 127:
-        print(f"max_motor out of range [0, 127]: {initial_max}", file=sys.stderr)
-        return 2
-
-    if args.trim is not None:
-        initial_trim = [float(x) for x in args.trim.split(",")]
-    else:
-        cfg_trim = cfg["control"].get("motor_trim", {})
-        initial_trim = [float(cfg_trim.get(k, 1.0)) for k in TRIM_KEYS]
-    if len(initial_trim) != 4 or any(not 0 <= v <= 4 for v in initial_trim):
-        print(f"trim must be 4 values each in [0, 4]: {initial_trim}", file=sys.stderr)
-        return 2
 
     host = args.host or input("server IP (from StickC LCD): ").strip()
     if not host:
@@ -729,13 +624,12 @@ def main() -> int:
     time.sleep(0.05)
     client.send_config_dict({"tel": True})
 
-    if args.coefs is not None:
-        # Blast the saved polynomial table. Manual slider tweaks below still
-        # write the constant a[0][0] term of STEADY/KICK cells via the JSON
-        # cfg path.
-        coefs = load_coefs_json(args.coefs)
-        n_sent = push_coefs(coefs, client.send_poly_chunk, client.send_config_dict)
-        print(f"pushed {n_sent} polynomial chunks from {args.coefs}")
+    # Build the motor coefficient table from config.json's [motor] section and
+    # blast it to the firmware. Manual slider tweaks below still write the
+    # constant a[0][0] term of STEADY/KICK cells via the JSON cfg path.
+    coefs = coefs_from_config(cfg)
+    n_sent = push_coefs(coefs, client.send_poly_chunk, client.send_config_dict)
+    print(f"pushed {n_sent} polynomial chunks from {args.config} [motor]")
 
     pygame.init()
     pygame.display.init()
@@ -755,10 +649,7 @@ def main() -> int:
     title_font = pygame.font.SysFont("monospace", 18, bold=True)
     clock = pygame.time.Clock()
 
-    (
-        sliders, quad_rects, settings_apply_btn,
-        framesize_choice, quality_slider,
-    ) = build_settings_layout(initial_max, initial_trim)
+    settings_apply_btn, framesize_choice, quality_slider = build_settings_layout()
     input_apply_btn = Button(
         pygame.Rect(INPUT_SIZE[0] - 132, BATTERY_STRIP_Y - 46, 116, 36), "Apply",
     )
@@ -795,8 +686,6 @@ def main() -> int:
 
     def do_apply() -> None:
         nonlocal dirty, last_apply_t, cam_status
-        push_config(client, sliders)
-
         # Camera /control: the firmware's sync WebServer cannot serve /control
         # while a /stream client is connected, so stop active streams first
         # and let the auto-start loop reopen /stream on the next render tick.
@@ -868,9 +757,6 @@ def main() -> int:
             if wid == settings_panel.id:
                 if settings_apply_btn.handle_event(event):
                     do_apply()
-                for sl in sliders.values():
-                    if sl.handle_event(event):
-                        dirty = True
                 if framesize_choice.handle_event(event):
                     dirty = True
                 if quality_slider.handle_event(event):
@@ -906,7 +792,7 @@ def main() -> int:
             latest_telemetry.latest(), camera_registry,
         )
         render_settings(
-            settings_panel, sliders, quad_rects, settings_apply_btn, dirty,
+            settings_panel, settings_apply_btn, dirty,
             framesize_choice, quality_slider, cam_status,
             title_font, big_font, font,
         )

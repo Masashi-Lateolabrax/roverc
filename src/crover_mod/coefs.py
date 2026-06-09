@@ -54,22 +54,30 @@ Per cell `1 + 2·(2m − 1) = 4m − 1` free params. f polynomial has degree
 `2·m_order`. With m=2 (default), f is degree 4; cell free = 7; total
 across 8 cells = 56. Firmware's `POLY_MAX_ORDER = 5` allows m up to 2.
 
-The on-disk JSON canonical form stores q_k, r_k, q_b, r_b in unit time.
+The table is built from the `motor` section of `config.json` via
+`from_config`; there is no separate on-disk coefficient file.
 """
 from __future__ import annotations
 
-import json
 import math
 import struct
 import time
 from dataclasses import dataclass, field
 from math import comb
-from pathlib import Path
 from typing import Callable
 
 DIRS = ("fwd", "bwd")
 WHEEL_NAMES = ("FL", "FR", "RL", "RR")
 N_WHEELS = 4
+
+# config.json `motor` section uses human-readable per-cell keys
+# `<wheel>_<dir>`, e.g. `front_left_fwd`, `rear_right_back`. These map to the
+# canonical (wheel index, internal dir) pair.
+WHEEL_CONFIG_NAMES = ("front_left", "front_right", "rear_left", "rear_right")
+DIR_CONFIG_SUFFIX = {"fwd": "fwd", "back": "bwd"}
+# Keys under `motor` that are scalars, not per-cell coefficient objects.
+# (kick_dur_ms / brake_dur_ms are per-cell, carried inside each cell object.)
+MOTOR_SCALAR_KEYS = frozenset({"m_order", "max_motor"})
 DEFAULT_M_ORDER = 2
 POLY_MAX_ORDER = 5                # firmware compile-time cap on f(t) degree
 POLY_NCOEFS = POLY_MAX_ORDER + 1  # wire format always carries 6 floats per poly
@@ -83,9 +91,11 @@ M_MAX_ORDER = POLY_MAX_ORDER // 2  # f degree = 2·m, so m ≤ POLY_MAX_ORDER//2
 #   [4..7]   k_steady               (float LE)
 #   [8..31]  kick c[0..POLY_MAX_ORDER]   (POLY_NCOEFS floats LE, monomial in t)
 #   [32..55] brake c[0..POLY_MAX_ORDER]  (POLY_NCOEFS floats LE, monomial in t)
-# Total 56 bytes. 8 chunks (4 wheels × 2 dirs) = full coef table.
+#   [56..57] kick_dur_ms            (uint16 LE; per-cell KICK phase length)
+#   [58..59] brake_dur_ms           (uint16 LE; per-cell BRAKE phase length)
+# Total 60 bytes. 8 chunks (4 wheels × 2 dirs) = full coef table.
 POLY_CHUNK_MAGIC = 0xC0
-POLY_CHUNK_BYTES = 4 + 4 + POLY_NCOEFS * 4 + POLY_NCOEFS * 4   # = 56
+POLY_CHUNK_BYTES = 4 + 4 + POLY_NCOEFS * 4 + POLY_NCOEFS * 4 + 2 + 2   # = 60
 
 CellKey = tuple[int, str]
 
@@ -104,10 +114,15 @@ class PerDirCoefs:
       * `q_b`, `r_b` — polynomials in `u = (T_b − t) / T_b` (BRAKE side,
         input-inverted)
 
+    `kick_dur_ms` / `brake_dur_ms` are the KICK / BRAKE phase lengths for
+    this specific (wheel, dir) cell — durations are per-motor, not global.
+
     Boundary conditions are not enforced by this class; callers go
     through `make_identity` to get a
     constraint-respecting set."""
     k_steady: float = 1.0
+    kick_dur_ms: int = 100
+    brake_dur_ms: int = 100
     q_k: list[float] = field(default_factory=lambda: [1.0])
     r_k: list[float] = field(default_factory=lambda: [1.0])
     q_b: list[float] = field(default_factory=lambda: [1.0])
@@ -116,29 +131,16 @@ class PerDirCoefs:
 
 @dataclass
 class CoefSet:
-    """Full coefficient table plus the scalar phase-duration / max-motor
-    settings that the firmware also needs."""
+    """Full coefficient table plus the scalar max-motor setting. Phase
+    durations are per-cell (see `PerDirCoefs`), not stored here."""
     m_order: int = DEFAULT_M_ORDER
     max_motor: int = 60
-    kick_dur_ms: int = 100
-    brake_dur_ms: int = 100
     cells: dict[CellKey, PerDirCoefs] = field(default_factory=dict)
 
     @staticmethod
     def cell_keys() -> list[CellKey]:
         """Canonical cell ordering used for vector packing and binary push."""
         return [(w, d) for w in range(N_WHEELS) for d in DIRS]
-
-    def normalize(self) -> None:
-        """Ensure all 8 cells exist; missing ones become identity defaults."""
-        for key in self.cell_keys():
-            if key not in self.cells:
-                self.cells[key] = PerDirCoefs(
-                    q_k=_const_unit(self.m_order),
-                    r_k=_const_unit(self.m_order),
-                    q_b=_const_unit(self.m_order),
-                    r_b=_const_unit(self.m_order),
-                )
 
 
 # ---------------------------------------------------------------------------
@@ -255,12 +257,7 @@ def make_identity(
     constant `√(k)/T` in unit time. This produces the linear ramp
     `f_k(t) = (k/T_k)·t` and linear decay `f_b(t) = (k/T_b)·(T_b − t)`,
     matching the firmware's natural startup behaviour."""
-    cs = CoefSet(
-        m_order=m_order,
-        max_motor=max_motor,
-        kick_dur_ms=kick_dur_ms,
-        brake_dur_ms=brake_dur_ms,
-    )
+    cs = CoefSet(m_order=m_order, max_motor=max_motor)
     Tk_sec = kick_dur_ms / 1000.0
     Tb_sec = brake_dur_ms / 1000.0
     target_qk = _target_scale(1.0, Tk_sec)
@@ -273,6 +270,8 @@ def make_identity(
         for d in DIRS:
             cs.cells[(w, d)] = PerDirCoefs(
                 k_steady=1.0,
+                kick_dur_ms=kick_dur_ms,
+                brake_dur_ms=brake_dur_ms,
                 q_k=list(qk),
                 r_k=list(rk),
                 q_b=list(qb),
@@ -282,103 +281,106 @@ def make_identity(
 
 
 # ---------------------------------------------------------------------------
-# JSON I/O
+# config.json -> CoefSet
 # ---------------------------------------------------------------------------
 
-JSON_VERSION = 4   # v4: even-Lukács with q_k, r_k, q_b, r_b; BRAKE input inversion
+def from_config(cfg: dict) -> CoefSet:
+    """Build the motor coefficient table from a parsed `config.json` dict.
 
+    Every motor parameter must be present in the `motor` section — there are
+    no defaults. The scalars are `max_motor` and `m_order`. The per-cell
+    coefficients are named `<wheel>_<dir>` keys directly under `motor`, where
+    `<wheel>` is `front_left` / `front_right` / `rear_left` / `rear_right` and
+    `<dir>` is `fwd` / `back`. All eight cells must be present, each fully
+    specified — including its own `kick_dur_ms` / `brake_dur_ms` (phase
+    lengths are per-motor)::
 
-def load_json(path: Path | str) -> CoefSet:
-    p = Path(path)
-    obj = json.loads(p.read_text(encoding="utf-8"))
-    version = int(obj.get("version", 0))
-    if version != JSON_VERSION:
-        raise ValueError(
-            f"{p}: unsupported coef JSON version {version} "
-            f"(expected {JSON_VERSION}). The motor model was reworked "
-            "(even-degree Lukács with BRAKE input inversion: q² + t(T−t)·r²); "
-            "regenerate identity via scripts/make_identity_coefs.py and recalibrate."
-        )
-    m_order = int(obj.get("m_order", DEFAULT_M_ORDER))
+        "motor": {
+          "max_motor": 60, "m_order": 2,
+          "front_left_fwd": {"k_steady": 1.0,
+                             "kick_dur_ms": 100, "brake_dur_ms": 100,
+                             "q_k": [...], "r_k": [...],
+                             "q_b": [...], "r_b": [...]},
+          ... (all 8 cells)
+        }
+
+    Each polynomial (`q_k`/`r_k`/`q_b`/`r_b`) must have exactly `m_order`
+    entries. `config.json` is the single, fully-explicit source of motor
+    characteristics — there is no separate coefficient file.
+    """
+    if "motor" not in cfg:
+        raise ValueError("config has no [motor] section")
+    motor = cfg["motor"]
+    m_order = int(motor["m_order"])
     if not (1 <= m_order <= M_MAX_ORDER):
-        raise ValueError(f"{p}: m_order={m_order} out of range [1, {M_MAX_ORDER}]")
-    cs = CoefSet(
-        m_order=m_order,
-        max_motor=int(obj.get("max_motor", 60)),
-        kick_dur_ms=int(obj.get("kick_dur_ms", 100)),
-        brake_dur_ms=int(obj.get("brake_dur_ms", 100)),
-    )
-    expected_len = m_order
-    for entry in obj.get("cells", []):
-        w = int(entry["wheel"])
-        d = str(entry["dir"])
-        if d not in DIRS or not (0 <= w < N_WHEELS):
-            continue
-        k_steady = float(entry.get("k_steady", 1.0))
-        def _read(key: str, src: dict, length: int) -> list[float]:
-            raw = [float(x) for x in src.get(key, _const_unit(length))]
-            return (raw + [0.0] * length)[:length]
-        cs.cells[(w, d)] = PerDirCoefs(
-            k_steady=k_steady,
-            q_k=_read("q_k", entry, expected_len),
-            r_k=_read("r_k", entry, expected_len),
-            q_b=_read("q_b", entry, expected_len),
-            r_b=_read("r_b", entry, expected_len),
-        )
-    cs.normalize()
-    return cs
+        raise ValueError(f"motor.m_order={m_order} out of range [1, {M_MAX_ORDER}]")
+    cs = CoefSet(m_order=m_order, max_motor=int(motor["max_motor"]))
 
+    def _poly(entry: dict, key: str, cell: str) -> list[float]:
+        raw = [float(x) for x in entry[key]]
+        if len(raw) != m_order:
+            raise ValueError(
+                f"motor.{cell}.{key} must have m_order={m_order} entries, "
+                f"got {len(raw)}"
+            )
+        return raw
 
-def save_json(cs: CoefSet, path: Path | str) -> None:
-    p = Path(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    cells = []
-    for key in cs.cell_keys():
-        cell = cs.cells.get(key, PerDirCoefs(
-            q_k=_const_unit(cs.m_order),
-            r_k=_const_unit(cs.m_order),
-            q_b=_const_unit(cs.m_order),
-            r_b=_const_unit(cs.m_order),
-        ))
-        w, d = key
-        cells.append({
-            "wheel": w,
-            "dir": d,
-            "k_steady": cell.k_steady,
-            "q_k": list(cell.q_k),
-            "r_k": list(cell.r_k),
-            "q_b": list(cell.q_b),
-            "r_b": list(cell.r_b),
-        })
-    obj = {
-        "version": JSON_VERSION,
-        "m_order": cs.m_order,
-        "max_motor": cs.max_motor,
-        "kick_dur_ms": cs.kick_dur_ms,
-        "brake_dur_ms": cs.brake_dur_ms,
-        "cells": cells,
+    valid_cell_keys = {
+        f"{wname}_{suffix}"
+        for wname in WHEEL_CONFIG_NAMES
+        for suffix in DIR_CONFIG_SUFFIX
     }
-    p.write_text(json.dumps(obj, indent=2), encoding="utf-8")
+    seen: set[CellKey] = set()
+    for key in motor:
+        if key in MOTOR_SCALAR_KEYS:
+            continue
+        if key not in valid_cell_keys:
+            raise ValueError(f"motor.{key}: unknown key (expected a scalar or "
+                             f"a <wheel>_<dir> cell)")
+        wname, suffix = key.rsplit("_", 1)
+        w = WHEEL_CONFIG_NAMES.index(wname)
+        d = DIR_CONFIG_SUFFIX[suffix]
+        entry = motor[key]
+        cs.cells[(w, d)] = PerDirCoefs(
+            k_steady=float(entry["k_steady"]),
+            kick_dur_ms=int(entry["kick_dur_ms"]),
+            brake_dur_ms=int(entry["brake_dur_ms"]),
+            q_k=_poly(entry, "q_k", key),
+            r_k=_poly(entry, "r_k", key),
+            q_b=_poly(entry, "q_b", key),
+            r_b=_poly(entry, "r_b", key),
+        )
+        seen.add((w, d))
+    missing = [k for k in valid_cell_keys
+               if (WHEEL_CONFIG_NAMES.index(k.rsplit("_", 1)[0]),
+                   DIR_CONFIG_SUFFIX[k.rsplit("_", 1)[1]]) not in seen]
+    if missing:
+        raise ValueError(f"motor: missing cells {sorted(missing)}")
+    return cs
 
 
 # ---------------------------------------------------------------------------
 # Binary push to firmware
 # ---------------------------------------------------------------------------
 
-def chunk_bytes(wheel: int, dir_idx: int, cell: PerDirCoefs,
-                T_k_sec: float, T_b_sec: float) -> bytes:
-    """Pack one (wheel, dir) cell into the 56-byte 0xC0 wire format. The
-    monomial f_k(t) and f_b(t) are derived from q_k, r_k, q_b, r_b on
-    the fly."""
+def chunk_bytes(wheel: int, dir_idx: int, cell: PerDirCoefs) -> bytes:
+    """Pack one (wheel, dir) cell into the 60-byte 0xC0 wire format. The
+    monomial f_k(t) and f_b(t) are derived from q_k, r_k, q_b, r_b on the
+    fly using this cell's own kick/brake durations, which are also carried
+    in the chunk so the firmware can time the phase transitions per-motor."""
+    T_k_sec = cell.kick_dur_ms / 1000.0
+    T_b_sec = cell.brake_dur_ms / 1000.0
     kick_t = _f_kick_monomial(cell.q_k, cell.r_k, T_k_sec)
     brake_t = _f_brake_monomial(cell.q_b, cell.r_b, T_b_sec)
-    fmt = f"<BBBBf{POLY_NCOEFS}f{POLY_NCOEFS}f"
+    fmt = f"<BBBBf{POLY_NCOEFS}f{POLY_NCOEFS}fHH"
     buf = struct.pack(
         fmt,
         POLY_CHUNK_MAGIC, wheel, dir_idx, 0,
         float(cell.k_steady),
         *kick_t,
         *brake_t,
+        int(cell.kick_dur_ms),
+        int(cell.brake_dur_ms),
     )
     assert len(buf) == POLY_CHUNK_BYTES, (len(buf), POLY_CHUNK_BYTES)
     return buf
@@ -391,20 +393,15 @@ def push_to_firmware(
     repeat: int = 2,
     inter_chunk_ms: float = 8.0,
 ) -> int:
-    """Push scalar cfg + 8 binary chunks. Inter-chunk delay matches the
-    ESP32 LWIP UDP rx queue depth (~6-8 packets); duplication is the
-    same durability pattern that `RoverCClient.send_config(repeat=3)`
+    """Push scalar cfg (max_motor) + 8 binary chunks. Each chunk carries its
+    own kick/brake durations, so no global duration is sent. Inter-chunk delay
+    matches the ESP32 LWIP UDP rx queue depth (~6-8 packets); duplication is
+    the same durability pattern that `RoverCClient.send_config_dict(repeat=3)`
     uses for the JSON cfg envelope. Returns total chunk transmissions
     (8 × repeat). Callbacks let us avoid importing roverc here (no
     circular dependency)."""
-    send_cfg_dict({
-        "mx": int(cs.max_motor),
-        "kdur": int(cs.kick_dur_ms),
-        "bdur": int(cs.brake_dur_ms),
-    })
+    send_cfg_dict({"mx": int(cs.max_motor)})
     time.sleep(0.02)
-    Tk_sec = cs.kick_dur_ms / 1000.0
-    Tb_sec = cs.brake_dur_ms / 1000.0
     sent = 0
     for w in range(N_WHEELS):
         for d_idx, d in enumerate(DIRS):
@@ -414,7 +411,7 @@ def push_to_firmware(
                 q_b=_const_unit(cs.m_order),
                 r_b=_const_unit(cs.m_order),
             ))
-            buf = chunk_bytes(w, d_idx, cell, Tk_sec, Tb_sec)
+            buf = chunk_bytes(w, d_idx, cell)
             for _ in range(repeat):
                 send_chunk(buf)
                 sent += 1

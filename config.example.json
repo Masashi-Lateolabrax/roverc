@@ -8,17 +8,86 @@
   },
   "control": {
     "rate_hz": 50,
-    "failsafe_ms": 200,
-    "max_motor": 60,
-    "motor_trim": {
-      "front_left": 0.0,
-      "front_right": 1.0,
-      "rear_left": 1.0,
-      "rear_right": 1.0
-    }
+    "failsafe_ms": 200
   },
   "camera": {
     "announce_port": 4211,
     "announce_interval_ms": 1000
+  },
+  "motor": {
+    "max_motor": 60,
+    "m_order": 2,
+    "front_left_fwd": {
+      "k_steady": 1.0,
+      "kick_dur_ms": 100,
+      "brake_dur_ms": 100,
+      "q_k": [10.0, 0.0],
+      "r_k": [10.0, 0.0],
+      "q_b": [10.0, 0.0],
+      "r_b": [10.0, 0.0]
+    },
+    "front_left_back": {
+      "k_steady": 1.0,
+      "kick_dur_ms": 100,
+      "brake_dur_ms": 100,
+      "q_k": [10.0, 0.0],
+      "r_k": [10.0, 0.0],
+      "q_b": [10.0, 0.0],
+      "r_b": [10.0, 0.0]
+    },
+    "front_right_fwd": {
+      "k_steady": 1.0,
+      "kick_dur_ms": 100,
+      "brake_dur_ms": 100,
+      "q_k": [10.0, 0.0],
+      "r_k": [10.0, 0.0],
+      "q_b": [10.0, 0.0],
+      "r_b": [10.0, 0.0]
+    },
+    "front_right_back": {
+      "k_steady": 1.0,
+      "kick_dur_ms": 100,
+      "brake_dur_ms": 100,
+      "q_k": [10.0, 0.0],
+      "r_k": [10.0, 0.0],
+      "q_b": [10.0, 0.0],
+      "r_b": [10.0, 0.0]
+    },
+    "rear_left_fwd": {
+      "k_steady": 1.0,
+      "kick_dur_ms": 100,
+      "brake_dur_ms": 100,
+      "q_k": [10.0, 0.0],
+      "r_k": [10.0, 0.0],
+      "q_b": [10.0, 0.0],
+      "r_b": [10.0, 0.0]
+    },
+    "rear_left_back": {
+      "k_steady": 1.0,
+      "kick_dur_ms": 100,
+      "brake_dur_ms": 100,
+      "q_k": [10.0, 0.0],
+      "r_k": [10.0, 0.0],
+      "q_b": [10.0, 0.0],
+      "r_b": [10.0, 0.0]
+    },
+    "rear_right_fwd": {
+      "k_steady": 1.0,
+      "kick_dur_ms": 100,
+      "brake_dur_ms": 100,
+      "q_k": [10.0, 0.0],
+      "r_k": [10.0, 0.0],
+      "q_b": [10.0, 0.0],
+      "r_b": [10.0, 0.0]
+    },
+    "rear_right_back": {
+      "k_steady": 1.0,
+      "kick_dur_ms": 100,
+      "brake_dur_ms": 100,
+      "q_k": [10.0, 0.0],
+      "r_k": [10.0, 0.0],
+      "q_b": [10.0, 0.0],
+      "r_b": [10.0, 0.0]
+    }
   }
 }
