@@ -1,6 +1,7 @@
 // Shared camera node logic: WiFi STA + esp32-camera + HTTP /jpg endpoint
 // + periodic UDP broadcast self-announce. The dispatching sketch supplies
-// a role string ("left" / "right") and the WiFi/announce parameters.
+// a role string (the active rig uses "front"; "left"/"right"/"fisheye"
+// remain for the shelved stereo/fisheye lines) and the WiFi/announce params.
 
 #include "camera_main.h"
 
@@ -41,17 +42,20 @@ static constexpr uint16_t HTTP_PORT = 80;
 static constexpr int I2C_SDA_PIN = 4;
 static constexpr int I2C_SCL_PIN = 13;
 static constexpr uint32_t I2C_FREQ = 50000;
+static constexpr uint8_t I2C_ADDR_FRONT = 0x40;
 static constexpr uint8_t I2C_ADDR_LEFT = 0x40;
 static constexpr uint8_t I2C_ADDR_RIGHT = 0x41;
 static constexpr uint8_t I2C_ADDR_FISHEYE = 0x42;
 
-// Map role string to the I2C slave address. Unknown roles fall back to RIGHT
-// to preserve the historical default (the codebase had only "left" / "right"
-// before fisheye was added).
+// Map role string to the I2C slave address. The active rig is a single
+// front monocular camera (front=0x40). The legacy stereo/fisheye roles are
+// retained so older sketches still flash; unknown roles fall back to the
+// front address.
 static uint8_t addr_for_role(const char *role) {
   if (strcmp(role, "left") == 0) return I2C_ADDR_LEFT;
+  if (strcmp(role, "right") == 0) return I2C_ADDR_RIGHT;
   if (strcmp(role, "fisheye") == 0) return I2C_ADDR_FISHEYE;
-  return I2C_ADDR_RIGHT;
+  return I2C_ADDR_FRONT;
 }
 // Slave response frame layout (10 bytes), read by the StickC master:
 //   [0..3] IPv4 octets   [4..5] http_port (LE)   [6] camera_ok   [7] wifi_ok
@@ -114,12 +118,14 @@ static uint8_t  g_consecutive_fb_fails = 0;
 static constexpr uint32_t I2C_SLAVE_HEAL_MS = 3000;
 static volatile uint32_t g_last_i2c_request_ms = 0;
 
-// MJPEG flow control. The StickC master alternates a 1-byte "go" write to
-// 0x40 / 0x41 at ~12 Hz each, offset 42 ms apart, so the two cameras never
-// transmit a frame at the same instant -- which is what causes airtime
-// contention spikes on shared 2.4 GHz when both produce a high-entropy
-// (large) JPEG simultaneously. If no token arrives within TOKEN_TIMEOUT_MS
-// the stream loop free-runs, so a dead StickC does not freeze the camera.
+// MJPEG flow control. The StickC master sends a 1-byte "go" write to the
+// front camera (0x40) at ~20 Hz. This token-paced design dates from the
+// stereo era, where alternating tokens to 0x40 / 0x41 kept the two cameras
+// from transmitting a frame at the same instant (airtime contention on
+// shared 2.4 GHz). With a single camera there is no contention to avoid, but
+// the token still bounds per-frame airtime. If no token arrives within
+// TOKEN_TIMEOUT_MS the stream loop free-runs, so a dead StickC does not
+// freeze the camera.
 //
 // Peak-byte cap: skip frames whose JPEG is larger than PEAK_BYTES_LIMIT to
 // avoid hogging airtime during high-entropy scenes. After MAX_SKIP_STREAK

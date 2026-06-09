@@ -4,7 +4,7 @@
 Three pygame windows (SDL2 multi-window):
   - Input: capture WASD/QE keystrokes; only active when this window has focus
   - Settings: per-wheel trim / kick sliders + globals; mouse-driven
-  - Cameras: left/right JPEG streams shown side-by-side
+  - Cameras: the single front monocular JPEG stream
 
 Usage:
     uv run src/python_client/teleop.py --host 192.168.1.123
@@ -51,8 +51,8 @@ TRIM_GRID_POS = {
 INPUT_SIZE = (600, 372)
 BATTERY_STRIP_Y = 320
 BATTERY_STRIP_H = 44
-# Per-cell Li-ion thresholds for the camera battery widgets. The Timer Camera
-# X / F all run on a single 18650-style cell (~4.2V full, ~3.7V nominal,
+# Per-cell Li-ion thresholds for the front camera battery widget. The Timer
+# Camera X runs on a single 18650-style cell (~4.2V full, ~3.7V nominal,
 # ~3.0V dead). Pick GREEN/YELLOW/RED bands a bit conservative so the user
 # sees YELLOW before the camera actually browns out.
 CAM_VBAT_GREEN_MV = 3800
@@ -62,7 +62,8 @@ STICK_PCT_GREEN = 30
 STICK_PCT_YELLOW = 10
 SETTINGS_SIZE = (820, 600)
 CAMERA_VIEW_SIZE = (320, 240)
-CAMERA_ROLES = ("left", "right", "fisheye")
+# Single front-facing monocular camera (no stereo, no fisheye).
+CAMERA_ROLES = ("front",)
 CAMERA_SIZE = (
     CAMERA_VIEW_SIZE[0] * len(CAMERA_ROLES) + 16 * (len(CAMERA_ROLES) + 1) + 16,
     CAMERA_VIEW_SIZE[1] + 96,
@@ -142,11 +143,11 @@ def draw_battery_strip(
     registry: CameraRegistry,
     label_font: pygame.font.Font, value_font: pygame.font.Font,
 ) -> None:
-    """5 chips across the strip: StickC, left cam, right cam, fisheye cam,
-    RoverC (proxied via StickC isCharging)."""
+    """3 chips across the strip: StickC, front cam, RoverC (proxied via
+    StickC isCharging)."""
     ox, oy = origin
     w, h = size
-    n = 5
+    n = 3
     gap = 6
     chip_w = (w - gap * (n - 1)) // n
 
@@ -167,14 +168,13 @@ def draw_battery_strip(
         (stick_label, stick_val, stick_sub, stick_color),
     ]
 
-    # Cameras
-    for role, label in (("left", "L"), ("right", "R"), ("fisheye", "F")):
-        info = registry.latest(role)
-        if info is None or info.vbat_mv is None or info.vbat_mv <= 0:
-            chips.append((label, "—", "no probe", (110, 110, 120)))
-            continue
+    # Front camera
+    info = registry.latest("front")
+    if info is None or info.vbat_mv is None or info.vbat_mv <= 0:
+        chips.append(("Cam", "—", "no probe", (110, 110, 120)))
+    else:
         chips.append((
-            label,
+            "Cam",
             f"{info.vbat_mv / 1000:.2f}V",
             "",
             _voltage_color(info.vbat_mv),

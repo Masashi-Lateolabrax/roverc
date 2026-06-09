@@ -14,33 +14,29 @@
 
 // I2C wiring on the RoverC HAT bus (StickC Plus2 P1 STICKIO header).
 // SDA = G0 (pin 5), SCL = G26 (pin 3). Single bus carries the RoverC motor
-// STM32 (0x38) plus all three cameras (left=0x40, right=0x41, fisheye=0x42)
-// via a soldered 1->3 cable splice from the HAT Grove out.
+// STM32 (0x38) plus the single front camera (front=0x40), wired straight
+// from the HAT Grove out (no cable splice now that stereo/fisheye are gone).
 static constexpr int PIN_SDA = 0;
 static constexpr int PIN_SCL = 26;
-// 50 kHz: conservative for the multi-stub topology after the splice, well
-// below the 400 pF / cable capacitance limit at 3 cameras + 30 cm leads.
+// 50 kHz: conservative for the ~30 cm Grove lead, well below the 400 pF
+// cable-capacitance limit. Kept from the multi-camera era for margin.
 static constexpr uint32_t I2C_HZ = 50000;
 
 static constexpr uint8_t ROVERC_ADDR = 0x38;
 static constexpr uint8_t REG_MOTOR = 0x00;
 
-// Cameras serve a 10-byte status frame on master read:
+// The front camera serves a 10-byte status frame on master read:
 //   [0..3] IPv4 octets  [4..5] http_port (LE)  [6] camera_ok  [7] wifi_ok
 //   [8..9] vbat_mv (LE)
-static constexpr uint8_t CAM_ADDR_LEFT = 0x40;
-static constexpr uint8_t CAM_ADDR_RIGHT = 0x41;
-static constexpr uint8_t CAM_ADDR_FISHEYE = 0x42;
+static constexpr uint8_t CAM_ADDR_FRONT = 0x40;
 static constexpr size_t CAM_FRAME_SIZE = 10;
 static constexpr uint32_t CAM_PROBE_INTERVAL_MS = 1000;
 
-// MJPEG send-token broadcast. Round-robin a 1-byte write to each camera
-// at CAM_TOKEN_PERIOD_MS so the cycle stays under TOKEN_TIMEOUT_MS=200ms
-// fall-through (50 ms x 3 = 150 ms cycle, ~6.7 Hz per camera).
+// MJPEG send-token. A 1-byte write to the camera at CAM_TOKEN_PERIOD_MS
+// keeps it under its TOKEN_TIMEOUT_MS=200ms fall-through (50 ms -> 20 Hz).
 static constexpr uint32_t CAM_TOKEN_PERIOD_MS = 50;
 static constexpr uint8_t  CAM_TOKEN_BYTE = 0x01;
 static uint32_t g_next_token_ms = 0;
-static uint8_t  g_token_target = 0;  // 0=left, 1=right, 2=fisheye
 
 // 25 Hz binary telemetry push to the last UDP sender (the PC client). 25 Hz
 // is slow enough to coexist with two MJPEG streams on the same 2.4 GHz radio
@@ -163,9 +159,7 @@ static int8_t g_motors[4] = {0, 0, 0, 0};
 // Last per-wheel normalized command (m_i * norm), telemetry "s" channel.
 static float g_s_norm[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 
-static CameraState g_cam_left = {CAM_ADDR_LEFT};
-static CameraState g_cam_right = {CAM_ADDR_RIGHT};
-static CameraState g_cam_fisheye = {CAM_ADDR_FISHEYE};
+static CameraState g_cam_front = {CAM_ADDR_FRONT};
 static uint32_t g_next_cam_tick_ms = 0;
 
 static const uint32_t CONTROL_PERIOD_MS = 1000UL / CONTROL_RATE_HZ;
@@ -494,9 +488,7 @@ static void push_camera_state() {
   if (g_last_sender == IPAddress(0, 0, 0, 0) || g_last_sender_port == 0) return;
   JsonDocument doc;
   JsonObject cam = doc["cam"].to<JsonObject>();
-  emit_camera(cam, "left", g_cam_left);
-  emit_camera(cam, "right", g_cam_right);
-  emit_camera(cam, "fisheye", g_cam_fisheye);
+  emit_camera(cam, "front", g_cam_front);
 
   char buf[256];
   size_t n = serializeJson(doc, buf, sizeof(buf));
@@ -681,11 +673,7 @@ static void update_lcd() {
     return RED;
   };
   M5.Display.print("cam ");
-  M5.Display.setTextColor(cam_color(g_cam_left), BLACK);
-  M5.Display.print("L ");
-  M5.Display.setTextColor(cam_color(g_cam_right), BLACK);
-  M5.Display.print("R ");
-  M5.Display.setTextColor(cam_color(g_cam_fisheye), BLACK);
+  M5.Display.setTextColor(cam_color(g_cam_front), BLACK);
   M5.Display.print("F\n");
   M5.Display.setTextColor(WHITE, BLACK);
 
@@ -782,9 +770,7 @@ void loop() {
       recover_i2c_bus();
       g_probe_fails_since_last_ok = 0;
     }
-    probe_camera(g_cam_left, Wire, &g_probe_fails_since_last_ok);
-    probe_camera(g_cam_right, Wire, &g_probe_fails_since_last_ok);
-    probe_camera(g_cam_fisheye, Wire, &g_probe_fails_since_last_ok);
+    probe_camera(g_cam_front, Wire, &g_probe_fails_since_last_ok);
     push_camera_state();
   }
 
@@ -793,12 +779,7 @@ void loop() {
     if (static_cast<int32_t>(now - g_next_token_ms) > 200) {
       g_next_token_ms = now + CAM_TOKEN_PERIOD_MS;  // catch up after a stall
     }
-    switch (g_token_target) {
-      case 0:  send_camera_token(CAM_ADDR_LEFT, Wire); break;
-      case 1:  send_camera_token(CAM_ADDR_RIGHT, Wire); break;
-      default: send_camera_token(CAM_ADDR_FISHEYE, Wire); break;
-    }
-    g_token_target = (g_token_target + 1) % 3;
+    send_camera_token(CAM_ADDR_FRONT, Wire);
   }
 
   update_lcd();

@@ -7,7 +7,7 @@ PC 側コード。ユーザ向けの起動・運用手順は **トップレベ�
 
 | File | Role |
 |---|---|
-| `teleop.py` | pygame マルチウィンドウ UI、UDP モーション送信、カメラ表示 |
+| `teleop.py` | pygame マルチウィンドウ UI、UDP モーション送信、前方単眼カメラ表示 |
 | `calibrate.py` | CMA-ES ループによる多項式係数の自動校正 |
 | `roverc.py` | `RoverCClient`（UDP socket、JSON / binary 多重化、telemetry rx loop） |
 | `camera.py` | `CameraRegistry` + `CameraStream`（HTTP MJPEG 受信） |
@@ -75,14 +75,13 @@ PC ↔ StickC は単一 UDP ポート（既定 4210）で 4 種多重化。
 #### camera state（JSON, ~1 Hz）
 
 ```json
-{"cam": {"left":  {"ip": "192.168.1.42", "port": 80, "ok": true, "vbat_mv": 4123},
-         "right": {"ip": "192.168.1.43", "port": 80, "ok": true, "vbat_mv": 4087},
-         "fisheye": {"ip": "192.168.1.44", "port": 80, "ok": true, "vbat_mv": 4051}}}
+{"cam": {"front": {"ip": "192.168.1.42", "port": 80, "ok": true, "vbat_mv": 4123}}}
 ```
 
-ファーム I2C プローブが拾ったカメラの IP / port / `camera_ok` /
-`vbat_mv`（カメラ側 `analogReadMilliVolts(38) * 2`、JST-PH 端電圧 mV）
-を伝搬。`null` は不在。
+ファーム I2C プローブが拾った前方単眼カメラ（role `front`、I2C 0x40）の
+IP / port / `camera_ok` / `vbat_mv`（カメラ側 `analogReadMilliVolts(38) *
+分圧比`、JST-PH 端電圧 mV）を伝搬。`null` は不在。旧ステレオ/魚眼構成では
+`left` / `right` / `fisheye` の複数キーを返していた。
 
 #### telemetry（binary 73 B, 25 Hz when `cfg.tel = true`）
 
