@@ -9,7 +9,7 @@ PC 側コード（共有クライアントライブラリ）。ユーザ向け�
 |---|---|
 | `roverc.py` | `RoverCClient`（UDP socket、JSON / binary 多重化、telemetry rx loop） |
 | `camera.py` | `CameraRegistry` + `CameraStream`（HTTP MJPEG 受信） |
-| `coefs.py` | 多項式係数の dataclass、JSON I/O、binary chunk encoder（identity baseline と `--coefs` push 用） |
+| `coefs.py` | 多項式係数の dataclass、`config.json` の `motor` セクションからの係数表生成（`from_config`）、binary chunk encoder |
 | `telemetry.py` | 0xD2 packet パーサ + thread-safe ring buffer |
 
 teleop UI アプリ（`teleop.py`）と専用 widget（`widgets.py`）は `examples/teleop/`
@@ -38,36 +38,35 @@ PC ↔ StickC は単一 UDP ポート（既定 4210）で 4 種多重化。
 
 ```json
 {"cfg": {
-  "mx":   60,
-  "kdur": 100,
-  "bdur": 100,
-  "tel":  false,
-  "tf":   [1, 1, 1, 1],
-  "tb":   [1, 1, 1, 1],
-  "kf":   [1, 1, 1, 1],
-  "kb":   [1, 1, 1, 1]
+  "mx":  60,
+  "tel": false
 }}
 ```
 
 - `mx`: per-tick motor cap, 0..127
-- `kdur` / `bdur`: KICK / BRAKE 相の duration（ms）
 - `tel`: 25 Hz binary telemetry の enable
-- `tf` / `tb` / `kf` / `kb`: legacy スカラ trim（4 輪、fwd/bwd × steady/kick）。
-  ファーム内では対応する STEADY/KICK セルの `a[0][0]` だけを書き換える。
-  既存の teleop slider はこの経路で動く
 
-#### polynomial chunk（binary, 132 B）
+`send_config_dict` でこの envelope を送る（`coefs.push_to_firmware` が起動時に
+`mx` を設定）。モータ係数本体（相の長さ含む）は下の 0xC0 chunk で送る。相の
+duration は per-cell になったので envelope には乗らない。ファームは旧
+`kdur` / `bdur` / `tf` / `tb` / `kf` / `kb` キーも無視するが、PC 側はもう送らない。
+
+#### polynomial chunk（binary, 60 B）
 
 ```
 [0]        magic 0xC0
 [1]        wheel  (0..3 = FL FR RL RR)
 [2]        dir    (0=fwd, 1=bwd)
-[3]        phase  (0=KICK, 1=STEADY, 2=BRAKE)
-[4..67]    a[16] little-endian float, row-major (j*4+k)   -- f-poly
-[68..131]  b[16] little-endian float, row-major           -- g-poly
+[3]        reserved (=0)
+[4..7]     k_steady              little-endian float -- STEADY gain
+[8..31]    kick c[0..5]          6 LE floats, monomial in t
+[32..55]   brake c[0..5]         6 LE floats, monomial in t
+[56..57]   kick_dur_ms           uint16 LE -- このセルの KICK 相の長さ
+[58..59]   brake_dur_ms          uint16 LE -- このセルの BRAKE 相の長さ
 ```
 
-24 chunks（4 × 2 × 3）で全更新。`(wheel, dir, phase)` でべき等。
+8 chunks（4 wheels × 2 dirs）で全更新。`(wheel, dir)` でべき等。相の長さは
+セルごとに異なるので各 chunk が自分の duration を運ぶ。
 `coefs.push_to_firmware()` は各 chunk を 2 回送り（ESP32 LWIP rx queue が浅い、
 ~6-8 packets）、8 ms 間隔でペースする。非有限値はファーム側で reject + Serial log。
 

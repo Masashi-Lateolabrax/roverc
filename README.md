@@ -61,10 +61,10 @@ arduino-cli lib install M5Unified ArduinoJson
 ```sh
 # StickC LCD に出る IP を直接渡す
 uv run examples/teleop/teleop.py --host 192.168.1.123
-
-# 校正済の多項式係数を起動時にプッシュする
-uv run examples/teleop/teleop.py --host 192.168.1.123 --coefs coefs/identity.json
 ```
+
+起動時、`config.json` の `motor` セクションからモータ係数表を生成し、firmware
+へ自動でプッシュする。
 
 3 ウィンドウ（input / settings / cameras）が開く。input 窓にフォーカスして以下：
 
@@ -77,20 +77,39 @@ uv run examples/teleop/teleop.py --host 192.168.1.123 --coefs coefs/identity.jso
 | `Enter` | apply settings |
 | `Esc` / `Ctrl-C` | quit |
 
-複数キー同時押し可。settings 窓のスライダ（trim / kick / framesize / quality）を変更したら **Apply** ボタンで反映。
+複数キー同時押し可。settings 窓のカメラ設定（framesize / quality）を変更したら **Apply** ボタンで反映。モータ特性は teleop では調整せず、`config.json` の `motor` セクションのみが設定源（起動時に一度だけ firmware へプッシュ）。
 
-## モータ係数の適用
+## モータ係数の設定
 
-自動校正（CMA-ES の `calibrate.py`）は廃止した。モータ補正係数は baseline
-（identity）を生成して使うか、teleop の trim スライダで手動調整する。
+自動校正（CMA-ES の `calibrate.py`）は廃止した。モータ特性は `config.json`
+の `motor` セクションだけが設定源で、teleop には実行時の調整機能を持たない。
+**デフォルト値は持たず、全パラメータを明示的に書く**。teleop が起動時に
+この設定から係数表を生成して firmware へプッシュする（パス指定不要）。
 
-```sh
-# identity（線形 baseline）係数を生成
-uv run python scripts/make_identity_coefs.py coefs/identity.json
+スカラ（`motor` 直下）:
 
-# 起動時に係数ファイルを firmware へプッシュ
-uv run examples/teleop/teleop.py --host <IP> --coefs coefs/identity.json
+- `max_motor` — I2C 出力上限（0..127）
+- `m_order` — 多項式の係数長（1〜2、`f` 多項式の次数は `2·m_order`）
+
+モータ係数（per-cell）は `<wheel>_<dir>` キー（`motor` 直下）。`<wheel>` は
+`front_left` / `front_right` / `rear_left` / `rear_right`、`<dir>` は `fwd` /
+`back`。**8 セル全てを必須で記述**し、各セルは `k_steady`、相の長さ
+`kick_dur_ms` / `brake_dur_ms`（**モータごとに別々**）、多項式
+`q_k` / `r_k` / `q_b` / `r_b`（各長さ `m_order`）を持つ。
+
+```json
+"motor": {
+  "max_motor": 60,
+  "m_order": 2,
+  "front_left_fwd":   { "k_steady": 1.0, "kick_dur_ms": 100, "brake_dur_ms": 100, "q_k": [10.0, 0.0], "r_k": [10.0, 0.0], "q_b": [10.0, 0.0], "r_b": [10.0, 0.0] },
+  "front_left_back":  { "k_steady": 1.0, "kick_dur_ms": 100, "brake_dur_ms": 100, "q_k": [10.0, 0.0], "r_k": [10.0, 0.0], "q_b": [10.0, 0.0], "r_b": [10.0, 0.0] },
+  "...":              "front_right_fwd / front_right_back / rear_left_fwd / rear_left_back / rear_right_fwd / rear_right_back も同様"
+}
 ```
+
+`q_k = r_k = q_b = r_b = √(k)/T`（T = そのセルの相長さ秒）の定数が線形 baseline
+（`f_k(t) = t/T_k`、`f_b(t) = 1 − t/T_b`）。`kick_dur_ms = 100` なら
+`10.0` がその値。輪ごとに特性・相長さを変えたいセルの数値を書き換える。
 
 研究データ収集セッションは **係数を固定** で運用する（platform dynamics の
 非定常性を避ける、卒研の主旨「再現可能なデータ収集」に直結）。
@@ -122,8 +141,8 @@ f_b(t) = (T_b−t)² · q_b(T_b−t)² + t(T_b−t) · r_b(T_b−t)²  on [0, T_
 `q(0) = 0` ⇒ `q = x · q̃` ⇒ `f = x² · q̃² + x(T−x) · r²`。BRAKE は入力反転
 `s = T_b − t` で `f̃(0) = 0` の境界に揃え、KICK と同型に扱う。
 
-`q_k`、`r_k`、`q_b`、`r_b` は次数 `m_order − 1`（default 2、`--m-order`
-で 1〜2 可変）の **符号自由**な多項式。`f` 多項式の次数は `2·m_order`
+`q_k`、`r_k`、`q_b`、`r_b` は次数 `m_order − 1`（default 2、`config.json`
+の `motor.m_order` で 1〜2 可変）の **符号自由**な多項式。`f` 多項式の次数は `2·m_order`
 （default で 4、ファーム `POLY_MAX_ORDER = 5` 内）。境界条件は
 `Q(1) = √(k)/T` という線形制約 1 本ずつに翻訳。
 
@@ -139,10 +158,6 @@ per (wheel, dir) の **自由パラメータ**：
 だれて再度 k へ戻る」「線形ランプに小さな bulge を加える」型の形状が
 区間内非負を保ったまま表現可能。
 
-`coefs/identity.json` は線形ベースライン：`k = 1`、`q_k = r_k = q_b = r_b
-= √(1)/T` 定数 → `f_k(t) = t/T_k`、`f_b(t) = 1 − t/T_b`。
-
-```sh
-uv run python scripts/make_identity_coefs.py coefs/identity.json
-uv run python scripts/make_identity_coefs.py coefs/identity_m1.json --m-order 1
-```
+`config.json` の `motor` セクションから生成される identity は線形ベースライン：
+`k = 1`、`q_k = r_k = q_b = r_b = √(1)/T` 定数 → `f_k(t) = t/T_k`、
+`f_b(t) = 1 − t/T_b`。`m_order` は 1〜2 可変（`f` 多項式の次数は `2·m_order`）。

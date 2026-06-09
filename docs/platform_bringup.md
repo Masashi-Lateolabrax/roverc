@@ -12,7 +12,7 @@
 
 | 段 | 状態 | 備考 |
 |---|---|---|
-| 段1 RoverC 遠隔操作 | **完了** | pygame UI、UDP server、4 相 polynomial モータモデル（PR #8 で even-Lukács に確定）。係数は identity baseline + 手動 trim で設定（CMA-ES 自動校正は 2026-06-10 に廃止） |
+| 段1 RoverC 遠隔操作 | **完了** | pygame UI、UDP server、4 相 polynomial モータモデル（PR #8 で even-Lukács に確定）。モータ特性（係数・相長さとも per-(wheel,dir)）は `config.json` の `motor` セクションのみで設定（CMA-ES 自動校正は 2026-06-10 に廃止、teleop の実行時調整機能も撤去） |
 | 段2 カメラ単眼 | **完了**（最終構成） | 前方カメラ 0x40 単一 slave、StickC I2C-mediated discovery、HTTP `/jpg`・`/stream` 配信。単眼が最終構成（旧ステレオ2台目は撤去） |
 | 段3 カメラ時間同期 | **未着手** | `Wire1.onReceive` のエントリポイントは camera firmware に既存。単眼化でカメラ間ペアリング不要、カメラ↔ロボット状態の整合のみ。実装は handoff note の Stage-3 セクション参照 |
 | 段4 ステレオ校正 | **廃止**（2026-06-09） | 単眼化により不要 |

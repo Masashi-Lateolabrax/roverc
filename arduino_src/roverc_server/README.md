@@ -64,5 +64,5 @@ Single JSON packet, UTF-8:
 ## Bring-up notes
 
 - Mecanum sign convention varies by chassis wiring. If a wheel spins the wrong way, flip the corresponding `SIGN_M*` constant in `roverc_server.ino`.
-- Start with `control.max_motor` low (60) in config.json, raise after sign verification.
+- Start with `motor.max_motor` low (60) in config.json, raise after sign verification.
 - DHCP may give a different IP on each boot. Read it from the LCD and pass it to `teleop.py` (prompt or `--host`).
