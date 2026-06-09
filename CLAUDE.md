@@ -21,8 +21,9 @@
 - **Memory エントリ操作時** → `lab-tool-cc-plugin:memory` を使用
 - **プラットフォーム bring-up 詳細** → `docs/platform_bringup.md`
 - **カメラストリーミング debug 知見**（MJPEG / urllib `read1` coalescing / Wire1 self-heal / I2C bus recovery / XCLK 8MHz 等）→ `docs/camera_streaming_lessons.md`
-- **別ライン研究プログラム候補（進学予定学生向け）** → `docs/async_stereo_interpolation.md`
-- **魚眼カメラ + IMU による VIO 速度推定ロードマップ** → `docs/fisheye_vio_roadmap.md`
+- **別ライン研究プログラム候補（進学予定学生向け）**（ステレオ前提。現行リグ = 前方単眼では非搭載、将来ライン）→ `docs/async_stereo_interpolation.md`
+- **魚眼カメラ + IMU による VIO 速度推定ロードマップ**（魚眼前提。現行リグ = 前方単眼では非搭載、将来ライン）→ `docs/fisheye_vio_roadmap.md`
+- **卒研テーマ: 低コスト・高ロバストなメカナム運動キャリブレーション (offline 二段 intrinsic/contact 分離設計)**（学生主軸テーマ, サーベイ済 2026-04-30. 2026-06-09 に前方単眼構成へ再設計 = Tier1/Tier2 ともに前方単眼カメラ + マーカーで ego-motion ground truth を取得。推しポイント = 実用 + 低コスト + 高ロバスト）→ `docs/calibration_thesis.md`
 - **RoverC ハード仕様** → `docs/roverc_datasheet.pdf` / `docs/roverc_pro_datasheet.pdf` / `docs/roverc_i2c_protocol.pdf`
 - **StickC Plus2 schematic** → `docs/stickc_plus2_schematic.pdf`
 
@@ -34,7 +35,7 @@
 ## 作業分担
 
 ### 指導者作業範囲：プラットフォーム bring-up
-プラットフォーム基盤（5段：RoverC 遠隔操作 → カメラ単眼 → 時間同期 → ステレオ化 → 性能評価）を**指導者単独で完遂**し、学生に検証済プラットフォームとして引き渡す。詳細は `docs/platform_bringup.md`。
+プラットフォーム基盤（RoverC 遠隔操作 → カメラ単眼 → 時間同期 → 性能評価。旧段4「ステレオ化」は 2026-06-09 の単眼化で廃止）を**指導者単独で完遂**し、学生に検証済プラットフォームとして引き渡す。詳細は `docs/platform_bringup.md`。
 
 ### 学生作業範囲：Mediator 層
 引き渡されたプラットフォーム上で、複数オペレータ UI、同期記録、ベースライン Mediator 実装、実験運営、データ品質検証、卒論執筆を担当する。詳細は本ファイル「卒研第一セルの構成」「学生作業の年間スケジュール」。
@@ -101,8 +102,8 @@ NNに（状況 + 複数オペレータの指示）を入力し、誰のどの指
 - RoverC × 1
 - M5StickC Plus2 × 1（運用、2026-04-26 確定）
 - M5StickC 無印（予備、swap 用）
-- M5Stack Timer Camera X × 5（運用2 = 前方ステレオ on RoverC、予備3）
-- M5Stack Timer Camera F × 1（魚眼、在庫。`docs/fisheye_vio_roadmap.md` 経由で VIO 速度推定用に搭載予定）
+- M5Stack Timer Camera X × 5（運用1 = 前方単眼 on RoverC、予備4。**2026-06-09 に前方ステレオ2台構成から単眼1台へ変更**）
+- M5Stack Timer Camera F × 1（魚眼、在庫。現行リグ非搭載。`docs/fisheye_vio_roadmap.md` の将来ライン用に温存）
 - PC × 1（Python開発）
 - 入力装置：ジョイスティック or キーボード × 2人分
 
@@ -111,16 +112,17 @@ NNに（状況 + 複数オペレータの指示）を入力し、誰のどの指
 - プロトコルは UDP + msgpack を想定（要再検討）
 - 同期精度は明示的に測定対象とする
 
-### 同期方式（ステレオカメラ + ロボット状態）
-- **方針：ソフトウェアタイムスタンプ + 有線 I2C 時刻同期**（2026-04-26 確定）
-- StickC Plus2 を I2C master、RoverC STM32（0x38）に加えて各カメラを slave として同バスに乗せる multi-slave 構成（カメラ：0x40, 0x41）。RoverC HAT バス (Plus2 P1 STICKIO: pin 3=G26/SCL, pin 5=G0/SDA、無印 StickC と同一配置、`stickc_plus2_schematic.pdf` で確認済) → RoverC Grove ポート → カメラ HY2.0-4P (GPIO 13=SCL, 4=SDA) で配線、既存 Grove ケーブル流用、追加配線なし
+### 同期方式（前方単眼カメラ + ロボット状態）
+**2026-06-09 変更**：前方ステレオ2台構成から前方単眼1台へ変更。カメラ間ペアリング（左右フレームの時刻整合）は不要になり、残る同期課題は **単一カメラフレーム ↔ ロボット状態（指令・telemetry）の時刻整合** のみ（calibration_thesis の ego-motion ground truth とモータ指令を揃えるのに必要）。
+- **方針：ソフトウェアタイムスタンプ + 有線 I2C 時刻同期**（2026-04-26 確定、単眼でも有効）
+- StickC Plus2 を I2C master、RoverC STM32（0x38）に加えて前方カメラ1台を slave として同バスに乗せる構成（カメラ：0x40）。RoverC HAT バス (Plus2 P1 STICKIO: pin 3=G26/SCL, pin 5=G0/SDA、無印 StickC と同一配置、`stickc_plus2_schematic.pdf` で確認済) → RoverC Grove ポート → カメラ HY2.0-4P (GPIO 13=SCL, 4=SDA) で配線、既存 Grove ケーブル流用、追加配線なし（単眼化でケーブルスプライス不要）
 - RoverC 公式ドキュメントの対応表記は「StickC / StickC Plus」のみで Plus2 名は未掲載だが、HAT ピン配列が無印と完全一致するため電気的に互換
-- StickC は 1Hz 程度で master 時刻（`esp_timer_get_time()`）を各カメラへブロードキャスト書き込み
-- 各 Timer Camera X はフレームごとに `camera_fb_t.timestamp` を記録、master 時刻オフセットを適用して PC 側で時刻整合フレームペアリング
+- StickC は 1Hz 程度で master 時刻（`esp_timer_get_time()`）をカメラへブロードキャスト書き込み
+- Timer Camera X はフレームごとに `camera_fb_t.timestamp` を記録、master 時刻オフセットを適用して PC 側でロボット状態と時刻整合
 - 同期ジッタは実測して評価軸として報告（卒論の「データ品質」評価項目と整合）
 - I2C bus 占有率は 5% 未満想定（モータ 50Hz × 5byte + 時刻 1Hz × 8byte）、競合リスク低
 - ベンチテスト計画は `docs/platform_bringup.md` の 段3・段5 を参照
-- **却下案**：
+- **却下案**（履歴。ステレオ期の2台精密同期検討だが、設計判断の記録として保持）：
   - GPIO trigger（2026-04-25 却下）：OV3660 FSIN が Timer Camera X 基板上にパッド化されていない、esp32-camera ドライバも外部トリガ非対応（詳細はハード調査結果セクション）
   - ESP-NOW 時刻同期（2026-04-26 却下）：カメラ DMA × ESP-NOW 同居が Timer Camera X で未検証、有線 I2C なら同等以上の精度を低リスクで達成可能と判断。ESP-NOW 関連の調査結果はハード調査結果セクションに参考情報として保持
 
@@ -132,7 +134,7 @@ NNに（状況 + 複数オペレータの指示）を入力し、誰のどの指
 学習型 Mediator は本卒研の対象外（次年度以降）。
 
 ### 評価軸
-- **データ品質**：同期ジッタ、欠損率、信号対雑音比、深度精度
+- **データ品質**：同期ジッタ（カメラ↔ロボット状態）、欠損率、信号対雑音比（深度精度はステレオ廃止に伴い対象外）
 - **プラットフォーム評価**：再現可能性、設定容易性、拡張性
 - **ベースライン Mediator 評価**：タスク達成度、対立頻度、脱落耐性
 
@@ -149,10 +151,10 @@ NNに（状況 + 複数オペレータの指示）を入力し、誰のどの指
 
 ### 学生作業の年間スケジュール（目安）
 
-前提：プラットフォーム bring-up（RoverC 遠隔操作・カメラ・時間同期・ステレオ化・性能評価）は指導者が完遂し、検証済の状態で学生に引き渡される（`docs/platform_bringup.md`）。学生は Mediator 層に集中する。
+前提：プラットフォーム bring-up（RoverC 遠隔操作・カメラ単眼・時間同期・性能評価。旧ステレオ化段は単眼化で廃止）は指導者が完遂し、検証済の状態で学生に引き渡される（`docs/platform_bringup.md`）。学生は Mediator 層に集中する。
 
 - **4〜6月**：Python 基礎 + 提供プラットフォーム使用法習得 + Arduino 軽め（StickC スケッチを読める程度） + 物理実験環境のラフ設計開始
-- **6〜8月**：物理実験環境構築（コース、障害物、ゴール、ステレオリグマウント） + ステレオ校正手順実施・文書化
+- **6〜8月**：物理実験環境構築（コース、障害物、ゴール、前方単眼カメラマウント） + 単眼カメラ intrinsic 校正 + マーカー（ArUco/AprilTag）設置・運用手順の文書化
 - **8〜10月**：複数オペレータ UI 実装（PC 側、キーボード × 2 を最低構成、ジョイスティック・ブラウザは余力で） + 同期記録パイプライン（Python、全ストリーム CSV/JSONL/parquet 出力）
 - **10〜12月**：ベースライン Mediator 実装（averaging / dominance / voting） + 実セッション運営とデータ収集
 - **1〜2月**：データ品質検証（同期ジッタ、欠損率、信号対雑音比） + 卒論執筆
@@ -259,8 +261,8 @@ NNに（状況 + 複数オペレータの指示）を入力し、誰のどの指
 ### ソフトトリガ精度（参考）
 - センサは XCLK でフリーラン、`esp_camera_fb_get()` はキューから完了済みフレームを返すだけ（撮影起動ではない）
 - 取得モード：`CAMERA_GRAB_LATEST` で常に最新 N 枚を保持
-- 2台のカメラの VSYNC 位相は独立、同時 `fb_get()` してもフレーム周期（30fps で ~33ms）以内のズレが発生
-- 解決：フレームごとに `camera_fb_t.timestamp`（VSYNC 直後のタイムスタンプ、`struct timeval`）を記録、後処理で最近接ペアリング
+- （ステレオ期の課題）2台のカメラの VSYNC 位相は独立、同時 `fb_get()` してもフレーム周期（30fps で ~33ms）以内のズレが発生 → 単眼化でカメラ間ペアリングは不要
+- 解決：フレームごとに `camera_fb_t.timestamp`（VSYNC 直後のタイムスタンプ、`struct timeval`）を記録、後処理でロボット状態と最近接整合（ステレオ期は左右フレームの最近接ペアリングにも使用）
 
 ### 関連プロジェクト
 - **espressif/esp32-camera Issue #192** "Precise Frame Sync with 2 ESP32 Cameras" — 2台精密同期の議論（stale）
@@ -282,7 +284,7 @@ NNに（状況 + 複数オペレータの指示）を入力し、誰のどの指
 ### camera_fb_t タイムスタンプ
 - `esp_camera.h` の `camera_fb_t` 構造体に `struct timeval timestamp` フィールドあり
 - 値：「フレームの最初の DMA バッファが書き始められた時刻」（VSYNC 直後）、起動からの経過時間
-- 複数機間で比較するには共通時計（**有線 I2C で StickC から配信されるマスタ時刻**）への変換が必要
+- ロボット状態（StickC 側 millis 系）と比較するには共通時計（**有線 I2C で StickC から配信されるマスタ時刻**）への変換が必要（ステレオ期は複数機間比較にも使用）
 
 ## 検討から外したテーマ（参考）
 

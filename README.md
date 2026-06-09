@@ -1,14 +1,14 @@
 # roverc
 
-M5StickC Plus2 が RoverC（メカナム車）を I2C で駆動し、Timer Camera X 2 台で
-ステレオ JPEG を WiFi 配信、PC（Python）から操縦・校正・記録する。
+M5StickC Plus2 が RoverC（メカナム車）を I2C で駆動し、前方単眼 Timer Camera X
+1 台で JPEG を WiFi 配信、PC（Python）から操縦・校正・記録する。
 
 ## ハードウェア
 
 - M5StickC Plus2 ×1（運用機 / UDP server）
 - M5StickC（無印、予備）
 - RoverC（メカナム車 + STM32 ハット、I2C 0x38）
-- M5Stack Timer Camera X ×2（前方ステレオ、I2C 0x40 / 0x41 でアドレス分離）
+- M5Stack Timer Camera X ×1（前方単眼、I2C 0x40。残りは予備在庫）
 - PC ×1（Python 3.9+、`uv`）
 - 入力：キーボード ×1（最低構成）
 
@@ -49,11 +49,12 @@ arduino-cli lib install M5Unified ArduinoJson
 # StickC Plus2（teleop server）
 ./flash.sh src/roverc_server
 
-# Timer Camera X（左右どちらも）
-./flash.sh src/camera_node /dev/ttyACM0
+# Timer Camera X（前方単眼）
+./flash.sh src/camera_node_front /dev/ttyACM0
 ```
 
 `flash.sh` はポート自動検出。複数台繋がっている時は明示指定。
+（旧ステレオ/魚眼スケッチ `src/camera_node_{left,right,fisheye}` は残置。別ライン研究で再利用する場合のみ使用）
 
 ## 操縦
 
