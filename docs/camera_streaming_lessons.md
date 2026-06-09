@@ -8,20 +8,20 @@ stage-2 (Timer Camera X JPEG over WiFi) と stage-3 (StickC I2C-mediated 双眼)
 
 - `urllib.request.urlopen` の HTTPResponse は socket を `BufferedReader` で包む
 - `r.read(N)` は複数の `recv()` 結果を 1 つにまとめて返すことがある → MJPEG パースで「800ms 沈黙 → 10 フレーム同時到着」というバースト擬似現象が生じる
-- **対策: `r.read1(N)`**（単発 syscall で即返す）。`src/python_client/camera.py` の `CameraStream._read_into` で採用済
+- **対策: `r.read1(N)`**（単発 syscall で即返す）。`src/crover_mod/camera.py` の `CameraStream._read_into` で採用済
 - 切り分けには `socket.socket()` で直接 `recv()` して比較するのが決定打。生 socket レベルでは元から 80ms 間隔（12 fps）で来ていた
 
 ### `set_framesize` 単体は DMA バッファ越境を起こす
 
 - `esp32-camera` のフレームバッファサイズは `esp_camera_init()` 時の `frame_size` で固定確保
 - `s->set_framesize(s, fs)` で実行時に拡大方向（QVGA → UXGA など）に変更するとセンサだけ大きいフレームを吐き、DMA がバッファ範囲を超えて書き込み → 任意メモリ破壊
-- **対策: `esp_camera_deinit()` → 新 `frame_size` で再 init**。`lib/camera_common/src/camera_main.cpp` の `camera_reinit()` で実装済
+- **対策: `esp_camera_deinit()` → 新 `frame_size` で再 init**。`arduino_src/lib/camera_common/src/camera_main.cpp` の `camera_reinit()` で実装済
 
 ### OV3660 の XCLK 20MHz は同機の 2.4GHz WiFi に干渉
 
 - 既知問題 ([espressif/arduino-esp32 #5834](https://github.com/espressif/arduino-esp32/issues/5834))
 - **8MHz** に下げると干渉が消える。代償は理論最大 fps 低下（QVGA で 30 → 12-15 fps 程度）
-- `lib/camera_common/src/camera_main.cpp` の `fill_camera_config` で 8MHz 採用済
+- `arduino_src/lib/camera_common/src/camera_main.cpp` の `fill_camera_config` で 8MHz 採用済
 
 ### sync WebServer は単一スレッド
 
@@ -45,7 +45,7 @@ stage-2 (Timer Camera X JPEG over WiFi) と stage-3 (StickC I2C-mediated 双眼)
 
 - マスタ側 `Wire.requestFrom` が失敗するとバスが physical に stuck（SDA/SCL が low に張り付く）することがある
 - **`Wire.end()` + `Wire.begin()` だけでは復旧しない**。SCL を最大 16 回手動パルス + 手動 STOP で stuck slave を解放してから `Wire.begin()` する必要
-- `src/roverc_server/roverc_server.ino` の `recover_i2c_bus()` で実装済
+- `arduino_src/roverc_server/roverc_server.ino` の `recover_i2c_bus()` で実装済
 - プローブ失敗判定は **ヒステリシス**を入れる（3 連続失敗で初めて `present=false`）。一瞬の blip で UI が空になるのを防ぐ
 - **永続不在のスレーブは bus recovery カウンタから除外**。そうしないと不在 right の連続失敗で毎周回 recovery が走り left の正常 probe を阻害する
 

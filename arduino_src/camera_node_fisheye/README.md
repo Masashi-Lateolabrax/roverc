@@ -8,5 +8,5 @@ See `docs/fisheye_vio_roadmap.md` for the wider plan (mast mount, single
 fisheye + IMU VIO on PC).
 
 ```bash
-./flash.sh src/camera_node_fisheye
+./flash.sh arduino_src/camera_node_fisheye
 ```

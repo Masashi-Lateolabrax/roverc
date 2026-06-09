@@ -3,11 +3,16 @@
 Wire protocol on a single UDP socket (PC <-> StickC):
 
 PC -> StickC
-- motion packet (JSON): {"t": ..., "vx": ..., "vy": ..., "wz": ...}
-- config packet (JSON): {"cfg": {"mx": ..., "kdur": ..., "bdur": ...,
-                                "tel": ..., "tf": [...], "tb": [...],
-                                "kf": [...], "kb": [...]}}
-- polynomial chunk (binary, magic 0xC0, 56 B): see `coefs.py`
+- heartbeat (binary, magic 0xA0, 1 B): liveness only. The firmware failsafe is
+  driven SOLELY by heartbeat arrival -- if none lands for FAILSAFE_MS the motors
+  are zeroed. Motion packets do NOT refresh it, so this must be sent periodically
+  (well inside the failsafe window) for the rover to act on any setpoint.
+- motion packet (JSON): {"t": ..., "vx": ..., "vy": ..., "wz": ...}. Sets the
+  setpoint, which the firmware holds until the next motion packet -- send once
+  per change, not continuously.
+- config packet (JSON): {"cfg": {"mx": ..., "tel": ...}}
+- polynomial chunk (binary, magic 0xC0, 60 B): per-cell coefficients and
+  phase durations -- see `coefs.py`
 
 StickC -> PC
 - camera state (JSON, ~1 Hz): {"cam": {"left": {"ip","port","ok","vbat_mv"}|null, ...}}
@@ -23,10 +28,13 @@ import json
 import socket
 import threading
 import time
-from collections.abc import Sequence
 from typing import Callable
 
 from camera import CameraRegistry
+
+# 1-byte liveness heartbeat the firmware uses to drive its failsafe (see the
+# module docstring). Must match HEARTBEAT_MAGIC in roverc_server.ino.
+HEARTBEAT_MAGIC = b"\xa0"
 
 
 class RoverCClient:
@@ -52,37 +60,19 @@ class RoverCClient:
             )
             self._rx_thread.start()
 
+    def send_heartbeat(self) -> None:
+        """Send the 1-byte liveness heartbeat. Must be called periodically,
+        well inside the firmware failsafe window, or the motors are zeroed."""
+        self._sock.sendto(HEARTBEAT_MAGIC, self._addr)
+
     def send_motion(self, vx: float, vy: float, wz: float, t: float | None = None) -> None:
         pkt = {"t": t if t is not None else time.time(), "vx": vx, "vy": vy, "wz": wz}
         self._sock.sendto(json.dumps(pkt).encode("utf-8"), self._addr)
 
-    def send_config(
-        self,
-        max_motor: int,
-        kick_dur_ms: int,
-        trim_fwd: Sequence[float],
-        trim_bwd: Sequence[float],
-        kick_fwd: Sequence[float],
-        kick_bwd: Sequence[float],
-        repeat: int = 3,
-    ) -> None:
-        cfg = {
-            "mx": int(max_motor),
-            "kdur": int(kick_dur_ms),
-            "tf": list(trim_fwd),
-            "tb": list(trim_bwd),
-            "kf": list(kick_fwd),
-            "kb": list(kick_bwd),
-        }
-        pkt = json.dumps({"cfg": cfg}).encode("utf-8")
-        for _ in range(repeat):
-            self._sock.sendto(pkt, self._addr)
-
     def send_config_dict(self, cfg: dict, repeat: int = 3) -> None:
         """Generic config push -- whatever keys are in `cfg` get applied
         firmware-side. Used by `coefs.push_to_firmware` to set max_motor /
-        kick_dur_ms / brake_dur_ms / tel without going through the
-        legacy `send_config` signature that requires trim arrays."""
+        kick_dur_ms / brake_dur_ms / tel."""
         pkt = json.dumps({"cfg": cfg}).encode("utf-8")
         for _ in range(repeat):
             self._sock.sendto(pkt, self._addr)

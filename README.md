@@ -1,14 +1,14 @@
 # roverc
 
-M5StickC Plus2 が RoverC（メカナム車）を I2C で駆動し、Timer Camera X 2 台で
-ステレオ JPEG を WiFi 配信、PC（Python）から操縦・校正・記録する。
+M5StickC Plus2 が RoverC（メカナム車）を I2C で駆動し、前方単眼 Timer Camera X
+1 台で JPEG を WiFi 配信、PC（Python）から操縦・記録する。
 
 ## ハードウェア
 
 - M5StickC Plus2 ×1（運用機 / UDP server）
 - M5StickC（無印、予備）
 - RoverC（メカナム車 + STM32 ハット、I2C 0x38）
-- M5Stack Timer Camera X ×2（前方ステレオ、I2C 0x40 / 0x41 でアドレス分離）
+- M5Stack Timer Camera X ×1（前方単眼、I2C 0x40。残りは予備在庫）
 - PC ×1（Python 3.9+、`uv`）
 - 入力：キーボード ×1（最低構成）
 
@@ -30,7 +30,7 @@ uv sync                # ランタイム依存のみ
 uv sync --group dev    # ruff + pyright も含める
 ```
 
-ランタイム依存：`pygame`（teleop UI）、`numpy` + `cma`（calibrate の CMA-ES ループ）。
+ランタイム依存：`pygame`（teleop UI）のみ。
 dev 依存：`ruff`（lint + import 整列）、`pyright`（型検査）。設定は `pyproject.toml` の
 `[tool.ruff]` / `[tool.pyright]` セクション。
 
@@ -47,23 +47,24 @@ arduino-cli lib install M5Unified ArduinoJson
 
 ```sh
 # StickC Plus2（teleop server）
-./flash.sh src/roverc_server
+./flash.sh arduino_src/roverc_server
 
-# Timer Camera X（左右どちらも）
-./flash.sh src/camera_node /dev/ttyACM0
+# Timer Camera X（前方単眼）
+./flash.sh arduino_src/camera_node_front /dev/ttyACM0
 ```
 
 `flash.sh` はポート自動検出。複数台繋がっている時は明示指定。
+（旧ステレオ/魚眼スケッチ `arduino_src/camera_node_{left,right,fisheye}` は残置。別ライン研究で再利用する場合のみ使用）
 
 ## 操縦
 
 ```sh
 # StickC LCD に出る IP を直接渡す
-uv run src/python_client/teleop.py --host 192.168.1.123
-
-# 校正済の多項式係数を起動時にプッシュする
-uv run src/python_client/teleop.py --host 192.168.1.123 --coefs coefs/identity.json
+uv run examples/teleop/teleop.py --host 192.168.1.123
 ```
+
+起動時、`config.json` の `motor` セクションからモータ係数表を生成し、firmware
+へ自動でプッシュする。
 
 3 ウィンドウ（input / settings / cameras）が開く。input 窓にフォーカスして以下：
 
@@ -76,43 +77,44 @@ uv run src/python_client/teleop.py --host 192.168.1.123 --coefs coefs/identity.j
 | `Enter` | apply settings |
 | `Esc` / `Ctrl-C` | quit |
 
-複数キー同時押し可。settings 窓のスライダ（trim / kick / framesize / quality）を変更したら **Apply** ボタンで反映。
+複数キー同時押し可。settings 窓のカメラ設定（framesize / quality）を変更したら **Apply** ボタンで反映。モータ特性は teleop では調整せず、`config.json` の `motor` セクションのみが設定源（起動時に一度だけ firmware へプッシュ）。
 
-## 校正（CMA-ES、自動）
+## モータ係数の設定
 
-`teleop.py` で手動 trim を回す代わりに、平らな床に置いた状態で
-`calibrate.py` を流して per-wheel の (3,3) 多項式係数を学習させる。
+自動校正（CMA-ES の `calibrate.py`）は廃止した。モータ特性は `config.json`
+の `motor` セクションだけが設定源で、teleop には実行時の調整機能を持たない。
+**デフォルト値は持たず、全パラメータを明示的に書く**。teleop が起動時に
+この設定から係数表を生成して firmware へプッシュする（パス指定不要）。
 
-```sh
-# 世代数と個体数を直接指定。
-# 5 candidates × 10 trials × ~3.5s/trial ≈ 175s/世代、10 世代で 30 分弱。
-uv run python src/python_client/calibrate.py \
-    --host 192.168.1.123 \
-    --generations 10 --pop-size 5 \
-    --out coefs/v1.json
+スカラ（`motor` 直下）:
 
-# 既存の校正結果から再開 / 洗練
-uv run python src/python_client/calibrate.py \
-    --host 192.168.1.123 \
-    --generations 20 --pop-size 5 \
-    --init-coefs coefs/v1.json \
-    --out coefs/v2.json
+- `max_motor` — I2C 出力上限（0..127）
+- `m_order` — 多項式の係数長（1〜2、`f` 多項式の次数は `2·m_order`）
+
+モータ係数（per-cell）は `<wheel>_<dir>` キー（`motor` 直下）。`<wheel>` は
+`front_left` / `front_right` / `rear_left` / `rear_right`、`<dir>` は `fwd` /
+`back`。**8 セル全てを必須で記述**し、各セルは `k_steady`、相の長さ
+`kick_dur_ms` / `brake_dur_ms`（**モータごとに別々**）、形状パラメータ
+`alpha_kick` / `beta_kick` / `alpha_brake` / `beta_brake` を持つ。
+
+```json
+"motor": {
+  "max_motor": 60,
+  "m_order": 2,
+  "front_left_fwd":   { "k_steady": 1.0, "kick_dur_ms": 100, "brake_dur_ms": 100, "alpha_kick": [1.0], "beta_kick": [1.0, 0.0], "alpha_brake": [1.0], "beta_brake": [1.0, 0.0] },
+  "front_left_back":  { "k_steady": 1.0, "kick_dur_ms": 100, "brake_dur_ms": 100, "alpha_kick": [1.0], "beta_kick": [1.0, 0.0], "alpha_brake": [1.0], "beta_brake": [1.0, 0.0] },
+  "...":              "front_right_fwd / front_right_back / rear_left_fwd / rear_left_back / rear_right_fwd / rear_right_back も同様"
+}
 ```
 
-各候補は `--n-trials`（既定 10）の trial（ランダム direction × 1.5s 駆動 +
-1.5s 解放）で評価され、コストは
-`α·∫|gz| during drive + β·∫|gz| during release`（β=2、解放時の残留 yaw を強く
-ペナルティ）。`--out` は毎ジェネレーション上書きされるので、`Ctrl-C` で中断
-しても直前のベストはそこに残っており、`--init-coefs <out>` で再開できる。
+`alpha` は長さ `m_order−1`（最後の α は `Σα=1` で従属）、`beta` は長さ
+`m_order`。`Σα=1` が `f_k(T_k)=k_steady`・`f_b(0)=k_steady` を構造的に保証する
+（相境界で高さが連続）。`beta` は境界に効かない自由形状。`alpha=[1.0]`,
+`beta=[1.0,0.0]` が線形 baseline（`f_k(t)=t/T_k`、`f_b(t)=1−t/T_b`）。
+`examples/motor_tuner` で形を見ながら数値を決められる。
 
-校正後：
-
-```sh
-uv run src/python_client/teleop.py --host <IP> --coefs coefs/v1.json
-```
-
-研究データ収集セッションは **校正済係数を固定** で運用する（platform
-dynamics の非定常性を避ける、卒研の主旨「再現可能なデータ収集」に直結）。
+研究データ収集セッションは **係数を固定** で運用する（platform dynamics の
+非定常性を避ける、卒研の主旨「再現可能なデータ収集」に直結）。
 
 ## モータ補正モデル
 
@@ -141,16 +143,15 @@ f_b(t) = (T_b−t)² · q_b(T_b−t)² + t(T_b−t) · r_b(T_b−t)²  on [0, T_
 `q(0) = 0` ⇒ `q = x · q̃` ⇒ `f = x² · q̃² + x(T−x) · r²`。BRAKE は入力反転
 `s = T_b − t` で `f̃(0) = 0` の境界に揃え、KICK と同型に扱う。
 
-`q_k`、`r_k`、`q_b`、`r_b` は次数 `m_order − 1`（default 2、`--m-order`
-で 1〜2 可変）の **符号自由**な多項式。`f` 多項式の次数は `2·m_order`
+`q_k`、`r_k`、`q_b`、`r_b` は次数 `m_order − 1`（default 2、`config.json`
+の `motor.m_order` で 1〜2 可変）の **符号自由**な多項式。`f` 多項式の次数は `2·m_order`
 （default で 4、ファーム `POLY_MAX_ORDER = 5` 内）。境界条件は
 `Q(1) = √(k)/T` という線形制約 1 本ずつに翻訳。
 
-per (wheel, dir) の **自由パラメータ**（CMA-ES 最適化対象）：
+per (wheel, dir) の **自由パラメータ**：
 `1 (k) + 2·((m−1) (q free) + m (r free)) = 4·m − 1`。m=2 で **7 / cell ×
-8 cells = 56 次元**。CMA-ES の Hansen λ デフォルトは `4 + ⌊3·ln(56)⌋ = 16`。
-`α`（q の target 正規化）と `β`（r の target 正規化）は無次元化されており、
-identity ベクトルは `[1, 1, 1, 0, 1, 1, 0]`（cell ごと）。
+8 cells = 56 次元**。`α`（q の target 正規化）と `β`（r の target 正規化）は
+無次元化されており、identity ベクトルは `[1, 1, 1, 0, 1, 1, 0]`（cell ごと）。
 
 **`[0, T]` 限定の非負性**：以前の `t·g²` 形式は `g²` が `ℝ` 全体で非負を
 要求するため過剰制約だったが、`q² + t(T−t)·r²` 形式は `t(T−t)` 因子が
@@ -159,10 +160,8 @@ identity ベクトルは `[1, 1, 1, 0, 1, 1, 0]`（cell ごと）。
 だれて再度 k へ戻る」「線形ランプに小さな bulge を加える」型の形状が
 区間内非負を保ったまま表現可能。
 
-`coefs/identity.json` は線形ベースライン：`k = 1`、`q_k = r_k = q_b = r_b
-= √(1)/T` 定数 → `f_k(t) = t/T_k`、`f_b(t) = 1 − t/T_b`。
-
-```sh
-uv run python scripts/make_identity_coefs.py coefs/identity.json
-uv run python scripts/make_identity_coefs.py coefs/identity_m1.json --m-order 1
-```
+`config.json` は `q/r` を直接持たず、無次元の `α`（=`alpha_*`）と
+`β`（=`beta_*`）で指定する。`from_config` が `q_unit[i]=α_i·√k/T`、
+`r_unit[i]=β_i·√k/T`（`α_last=1−Σα`）で `q/r` を復元する。identity は
+`alpha=[1]`, `beta=[1,0]` → `q_k=r_k=q_b=r_b=√(1)/T` 定数 → `f_k(t)=t/T_k`、
+`f_b(t)=1−t/T_b`。`m_order` は 1〜2 可変（`f` 多項式の次数は `2·m_order`）。

@@ -1,19 +1,21 @@
 # プラットフォーム bring-up 計画（指導者作業）
 
-最終更新: 2026-04-29
+最終更新: 2026-06-09（前方ステレオ2台 → 前方単眼1台へ構成変更）
 
 ## 位置付け
 
 学生卒研の前段階として、**指導者が単独で実施**するハード・ソフトウェア基盤整備。各段で動く成果物を残し、学生に検証済プラットフォームとして引き渡す。学生は引き渡し後、Mediator 層（複数オペレータ UI、同期記録、ベースライン Mediator、実験運営）に集中できる。
 
-## 現状（2026-04-29 時点）
+## 現状（2026-06-09 時点）
+
+**2026-06-09 構成変更**：実験前提を前方ステレオ2台から **前方単眼1台**（no fisheye）へ変更。段4「ステレオ化」は廃止、段3 の同期はカメラ間ペアリングが不要になり「単眼フレーム ↔ ロボット状態」の整合のみに縮小。
 
 | 段 | 状態 | 備考 |
 |---|---|---|
-| 段1 RoverC 遠隔操作 | **完了** | pygame UI、UDP server、4 相 polynomial モータモデル（PR #8 で even-Lukács に確定）、CMA-ES キャリブレーション基盤 |
-| 段2 カメラ単眼 → ステレオ | **完了**（段4 を吸収） | 0x40 / 0x41 multi-slave 構成、StickC I2C-mediated discovery、HTTP `/jpg` 配信。stage 4 のステレオ化は同 iteration で実施済み |
-| 段3 カメラ時間同期 | **未着手** | `Wire1.onReceive` のエントリポイントは camera firmware に既存。実装は handoff note の Stage-3 セクション参照 |
-| 段4 ステレオ校正 | **部分完了** | 2 台稼働は段2 と一体で完了。OpenCV `stereoCalibrate` による校正実施・reproject error 計測は未実施 |
+| 段1 RoverC 遠隔操作 | **完了** | pygame UI、UDP server、4 相 polynomial モータモデル（PR #8 で even-Lukács に確定）。モータ特性（係数・相長さとも per-(wheel,dir)）は `config.json` の `motor` セクションのみで設定（CMA-ES 自動校正は 2026-06-10 に廃止、teleop の実行時調整機能も撤去） |
+| 段2 カメラ単眼 | **完了**（最終構成） | 前方カメラ 0x40 単一 slave、StickC I2C-mediated discovery、HTTP `/jpg`・`/stream` 配信。単眼が最終構成（旧ステレオ2台目は撤去） |
+| 段3 カメラ時間同期 | **未着手** | `Wire1.onReceive` のエントリポイントは camera firmware に既存。単眼化でカメラ間ペアリング不要、カメラ↔ロボット状態の整合のみ。実装は handoff note の Stage-3 セクション参照 |
+| 段4 ステレオ校正 | **廃止**（2026-06-09） | 単眼化により不要 |
 | 段5 性能評価 | **未着手** | 同期ジッタ・FPS・レイテンシ・Grove 5V ドロップ実測すべて未実施 |
 
 **未解決の既知問題**:
@@ -78,21 +80,11 @@
 
 ---
 
-### 段4: ステレオ化（カメラ増設）
+### 段4: ステレオ化（カメラ増設）— **廃止（2026-06-09）**
 
-**目的**: 2 台ステレオリグ + 校正
+実験前提を前方単眼へ変更したため、この段は廃止。2 台目カメラ・ステレオリグ・`cv2.stereoCalibrate`・時刻整合ペアリングはいずれも不要。
 
-**技術構成**:
-- 2 台目を同 I2C バスに slave 0x41 で追加（0x38 RoverC, 0x40 Cam L, 0x41 Cam R の multi-slave）
-- ステレオマウント設計（基線長、剛性、RoverC 搭載位置）
-- OpenCV `cv2.stereoCalibrate` で校正
-
-**成果物**:
-- ステレオリグ（3D モデル + 実機）
-- 校正パラメータ + 校正手順書
-- 時刻整合ステレオペア配信パイプライン
-
-**完了基準**: チェッカーボード校正済、reproject error < 1px
+旧ステレオ設計を将来再導入する場合は git 履歴（〜2026-06-08）を参照。
 
 ---
 
@@ -104,7 +96,7 @@
 - 同期ジッタ実測（ms/μs スケール）
 - フレームレート、欠損率
 - エンドツーエンドレイテンシ（Python コマンド → モータ動作 → 画像反映）
-- 校正精度（reproject error）
+- 校正精度（単眼 intrinsic の reproject error、マーカー pose 推定精度。旧ステレオ reproject は廃止）
 - Grove 5V ドロップ実測（バッテリ容量検証、Option A→B エスカレーション判断材料）
 - セッション持続時間（バッテリ持ち、モータ + カメラ同時動作下）
 
@@ -120,9 +112,9 @@
 ## 学生引き渡し時の interface
 
 引き渡し成果物:
-1. 動作確認済ハード（StickC Plus2 + RoverC + ステレオカメラリグ）
-2. ファームウェア（StickC Plus2 スケッチ、カメラスケッチ、書き込み手順）
-3. Python ラッパライブラリ（`roverc.move(...)`, `cameras.get_synced_pair()` 等）
+1. 動作確認済ハード（StickC Plus2 + RoverC + 前方単眼カメラ）
+2. ファームウェア（StickC Plus2 スケッチ、前方カメラスケッチ `camera_node_front`、書き込み手順）
+3. Python ラッパライブラリ（`roverc.move(...)`, 前方カメラの時刻付きフレーム取得 等）
 4. 校正ファイル + 校正手順書
 5. 性能レポート（既知の限界・未検証項目を明示）
 
@@ -132,12 +124,12 @@
 
 ## バッテリテレメトリ
 
-5 個の独立給電デバイス（StickC Plus2、RoverC、左右 + 魚眼カメラ）の電池切れを silent failure ではなく可視化するため、teleop UI の入力パネル下端に 5 並びのバッテリ widget を表示する。
+3 個の独立給電デバイス（StickC Plus2、RoverC、前方カメラ）の電池切れを silent failure ではなく可視化するため、teleop UI の入力パネル下端に 3 並びのバッテリ widget を表示する（2026-06-09 の単眼化前は左右+魚眼を含む 5 並びだった）。
 
 | デバイス | 取得経路 | 値 |
 |---|---|---|
 | StickC Plus2 | `M5.Power.getBatteryVoltage/Level/isCharging`、25Hz telemetry の trailer に同梱（PR #16, magic 0xD2） | mV / % / charging |
-| 左 / 右 / 魚眼カメラ | カメラ側 `analogReadMilliVolts(38) * (R28+R29)/R29`（R28=1.37K, R29=2.67K → ×1.513、Sch_M5TimerCAM.pdf 参照）、I2C status frame の `[8..9]` に LE で乗せて StickC が `~1Hz` JSON で PC へ伝搬（PR #17, 分圧比 fix は PR #19） | mV |
+| 前方カメラ | カメラ側 `analogReadMilliVolts(38) * (R28+R29)/R29`（R28=1.37K, R29=2.67K → ×1.513、Sch_M5TimerCAM.pdf 参照）、I2C status frame の `[8..9]` に LE で乗せて StickC が `~1Hz` JSON で PC へ伝搬（PR #17, 分圧比 fix は PR #19） | mV |
 | RoverC | **直読み不可**（公式 I2C プロトコルにバッテリレジスタなし、STM32F030 ファームは閉じ／書き換え非実用）。代理として StickC `isCharging` を見る — RoverC が HAT バスに 5V を供給している間 True、バッテリが落ちると 5V が崩れて False に flip する | OK / DYING |
 
 ### RoverC proxy の信頼境界
@@ -168,28 +160,33 @@
    boost converter (5V, 容量未公表 ≦ ~2A 推定)
         │
         ├── HAT 8-pin (G26/G0/5V/GND) ─────► StickC Plus2
-        │                                         │ (AXP192 が 5V→電池充電)
+        │                                         │ (HAT 5VIN は動作電源のみ.
+        │                                         │  TP4057 充電パスは USB-C VBUS 経由)
         │                                         └─ 内蔵 200mAh LiPo
         │
+        ├─[USB-C pigtail]─► StickC USB-C VBUS → TP4057 VCC → BAT → 200mAh LiPo (充電)
+        │   ↑ 採用予定 mod (1 本のみ). カメラへの pigtail は不採用 (理由は後述)
+        │
         ├── Grove I2C① (SCL/SDA/5V/GND) ──┐
-        │                                  │ 3-way 分岐
-        ├── Grove I2C② (SCL/SDA/5V/GND) ──┤  (現状は I2C① 1ヶ所からハンダ splice)
-        │                                  │
+        │                                  │ (単眼化で 1 本直結.
+        ├── Grove I2C② (SCL/SDA/5V/GND)    │  旧ステレオ/魚眼期は I2C① から
+        │                                  │   3-way ハンダ splice だった)
         ├── Servo S1/V/G (Pro 専用)         │
         ├── Servo S2/V/G (Pro 専用)         │
         │                                  ▼
-        │                          各 Timer Camera X / F の Grove (HY2.0)
-        │                              5V → VSYS_VIN (D8 を介さない直結)
+        │                          前方 Timer Camera X の Grove (HY2.0)
+        │                              5V → VSYS_VIN (動作電源, 充電パスではない)
         │                                       │
         │                                       ▼
         │                               3V3 LDO → ESP32 / OV3660
-        │
-        └─[USB-C pigtail]─► 各カメラ USB-C VBUS (= VUSB_VCC)
+
+  (各カメラ内部詳細, 参考)
+                          USB-C VBUS (通常未配線, off-rover 充電時のみ)
                                        │
                               ┌────────┴────────┐
                               ▼                 ▼
                          TP4057 VCC         D8 (1N5819)
-                         (USB のみ)              │
+                         (USB-C 経由限定)         │
                               │                  ▼
                           BAT ピン        VSYS_VIN ──► 3V3 LDO ──► ESP32 / OV3660
                               │                  ▲
@@ -207,14 +204,19 @@
 
 ### Battery sharing / fallback の性質
 
-各カメラの VSYS_VIN は **D6 (VBAT→VSYS) と D8 (USB-C→VSYS) の schottky OR** で食わされている. これにより:
+「動作電源 (5V rail)」と「LiPo 充電パス (TP4057 VCC)」を分けて見る必要がある. **動作電源は RoverC 5V rail で全機共有されているが, LiPo 充電パスはどの子機にも HAT/Grove 経由では届かない**. これは 2026-04-30 の実測で決着している (カメラ: 全機完全枯渇まで放電後, USB-C+Grove vs Grove only の比較で USB-C のみ電圧上昇. StickC: HAT 接続のみで運用していたら何度も枯渇).
 
-- **RoverC が生きている間**: Grove 5V (および将来の USB-C pigtail) が VSYS_VIN を駆動. 内蔵 LiPo は使われず, USB-C 経由なら同時に TP4057 が充電
-- **RoverC が落ちた瞬間**: VSYS_VIN が 5V → 0V に向かう途中で D6 が導通開始 → カメラは内蔵 LiPo (140mAh) 経由で動き続ける. 数秒〜数分の延命 (FET3 が ON なら)
+カメラ側 (Grove 5V → VSYS_VIN):
+- **RoverC が生きている間**: Grove 5V が VSYS_VIN を駆動. 内蔵 LiPo は D6 逆バイアスで isolate, **充電も放電もされず固定**
+- **RoverC が落ちた瞬間**: VSYS_VIN が 5V → 0V に向かう途中で D6 が導通開始 → カメラは内蔵 LiPo (140mAh) 経由で動き続ける. 満充電なら ~1 時間 (FET3 が ON なら). ただしこの間 motor は止まってるので「安全停止のための tail」用途
+- **充電したい場合**: USB-C 経由でないと TP4057 に給電が届かない. 採用方針は **off-rover 個別 USB 充電** (機材側でハブ充電, 各カメラに pigtail は引かない)
 
-StickC Plus2 も同様に AXP192 が「外部給電 (= HAT 5V) > 電池電圧」のとき自動切替するので, RoverC が落ちても StickC は内蔵 200mAh LiPo で生き残る.
+StickC Plus2 側 (HAT 5VIN):
+- **動作電源**: HAT 5VIN は動作電源として機能. RoverC 生きてる間は HAT 5V で system 駆動
+- **LiPo 充電**: 実機で**何度も枯渇している**事実から, HAT 5V → TP4057 のチャージパスは効いていない (回路図上 +5VIN ネットに TP4057 VCC が乗ってるように見えるが, 実態として LiPo 充電は走っていない. 詳細トレース未確定だが empirical に決着済)
+- **採用方針**: **USB-C pigtail 1 本だけ追加**して RoverC 5V → StickC USB-C VBUS → TP4057 VCC で内蔵 LiPo を充電する. これがあれば session 中 LiPo を満タン維持でき, RoverC 落ち時も `isCharging=False` 検知 → ~2.5 時間の単独動作で安全停止判断が可能
 
-つまり **RoverC = 主電源 + 各小電池に充電を流す親, 子はそれぞれ内蔵電池で短時間 graceful degrade** という構造が**ハードレベルで既に成立している**. これを teleop UI で可視化したのが PR #18 の battery strip + RoverC `isCharging` proxy. RoverC が落ちると `isCharging=False` → "DYING" 表示 → 操縦者は数十秒内に安全停止判断ができる.
+つまり **「動作電源は親 RoverC が全機に流す」「LiPo 充電は USB-C pigtail を引いた子機 (StickC のみ) が受け取る」「カメラ LiPo は session-local fallback (D6) のみ」**. これを teleop UI で可視化したのが PR #18 の battery strip + RoverC `isCharging` proxy. RoverC が落ちると `isCharging=False` → "DYING" 表示 → 操縦者は数十秒内に安全停止判断ができる.
 
 ### POWER_HOLD (GPIO 33) を起動時に HIGH にする必要
 
@@ -235,45 +237,46 @@ PR #22 で `pinMode(33, OUTPUT); digitalWrite(33, HIGH);` を `camera_main_setup
 | 負荷 | 連続値 |
 |---|---|
 | 4 N20 モータ 中速 | ~400 mA |
-| 3 カメラ VSYS run | ~600 mA |
-| StickC | ~80 mA |
-| **base 合計** | **~1.1 A** |
-| 3 カメラ充電 (CC phase, **初回 ~30 分のみ**) | +714 mA |
+| 前方カメラ 1 台 VSYS run | ~200 mA |
+| StickC 動作 | ~80 mA |
+| **base 合計** | **~0.7 A** |
+| StickC LiPo 充電 (CC phase, **空からの初回 ~10 分のみ**) | +~100 mA |
 
-motor stall (4 A peak, 数十 ms transient) は出力キャパで吸収される領域なので連続電流の議論からは除外.
+motor stall (4 A peak, 数十 ms transient) は出力キャパで吸収される領域なので連続電流の議論からは除外. カメラ LiPo 充電電流は **0** (pigtail 不採用方針のため). 単眼化前は 3 カメラで ~600 mA / base ~1.1 A だったが, 1 台化で base 負荷が ~0.4 A 軽くなった.
 
 ### 充電電流の実態は瞬間的でない
 
-TP4057 は CC-CV 充電で, 「714 mA 連続」状態は **LiPo が空のときの最初 ~30 分だけ**. その後は CV phase で電流が漸減 (238 → 24 mA), 完了後は termination で 24 mA 以下に落ちる. 通常セッション (前回満充電済) では充電電流は数 mA レベル. つまり:
+TP4057 は CC-CV 充電で, StickC 200mAh LiPo を空から CC ~100 mA で充電する場合 ~10 分で C/2 に達して以降 CV phase で電流が漸減 (~30 → 数 mA), 完了後は termination で数 mA 以下に落ちる. **平常セッションでは StickC 充電電流は数 mA レベル**で base 負荷に埋もれる. つまり:
 
-- 初回充電セッション: base 1.1 A + 充電 0.7 A = **1.8 A** (~30 分のみ)
-- 2 セッション目以降: base 1.1 A + 充電 ~0.05 A = **~1.1 A** 平常運用
+- 初回充電セッション: base 0.7 A + StickC 充電 0.1 A = **~0.8 A** (10 分以内)
+- 平常セッション: base 0.7 A + StickC 充電 ~0.005 A = **~0.7 A**
 
-1〜2 A 級 boost に対して初回はギリギリ, 以降は余裕という見立て.
+1〜2 A 級 boost に対して常時十分余裕. カメラ pigtail 不採用 + 単眼化での base 軽量化で sag 懸念はほぼ消える.
 
-### USB-C 充電 pigtail mod (採用予定)
+### USB-C 充電 pigtail mod (採用予定: StickC のみ)
 
-カメラの内蔵 LiPo は **TP4057 が VUSB_VCC (USB のみ) からしか充電できない** ため, Grove 5V だけで運用していると毎セッション self-discharge し続ける (issue #12 で 0.28V 観測の主因). mod 内容:
+子機の LiPo を充電するには TP4057 VCC まで 5V を届ける必要があるが, HAT pin 8 や Grove HY2.0 5V 経由ではこのパスが繋がらない (実測確認済 2026-04-30, Grove は VSYS_VIN まで, HAT 5VIN は StickC 動作電源までで止まる). USB-C VBUS だけが TP4057 VCC への直接ルートになる.
+
+**採用方針: StickC Plus2 に 1 本だけ pigtail を引く**.
 
 1. 100均の充電専用 USB-C ケーブルを剥いて 5V/GND 2 線を引き出し
-2. RoverC の Grove 5V (or Servo V) から 3-way 分岐
-3. 各カメラの USB-C ポートに食わせる
-4. 内蔵 LiPo が常時充電 + schottky-OR battery sharing topology が機能
+2. RoverC の Grove 5V (or Servo V) から 1 本分岐
+3. StickC Plus2 の USB-C ポートに食わせる
+4. RoverC 動作中 StickC 内蔵 200mAh LiPo が常時 top-up される
 
-過剰な保護回路 (直列抵抗 / polyfuse / TP4057 R30 swap) は **基本不要**. base 負荷に Grove I2C 経由で 600 mA 既に流していて RoverC が動いている以上, 同じ等価負荷を USB-C 経由で追加するだけ. ピグテイルの物理的な耐絶縁を確保するために **半田部に熱収縮 + ホットボンド**で機械保護する方が, polyfuse 入れるより実用的なリスク低減になる.
+前方カメラへの pigtail は**不採用**（単眼化前のステレオ+魚眼 3 台でも同方針だった）. 理由:
+
+- カメラ LiPo は post-RoverC-death の数十秒 〜 ~1 時間の tail にしか効かない. その間 motor は止まっているので駆動継続は不可能, 用途は安全停止 / 最後のフレーム / データ flush 程度
+- StickC は逆に「落ちると操縦も I2C master も WiFi も全滅」なので最優先で守るべき LiPo
+- 1 本だけにすればハーネス管理 / 半田作業 / 物理保護が最小. 充電電流も ~100 mA 程度で sag リスクほぼゼロ
+- カメラを充電したいときは off-rover で USB ハブ経由個別充電 (セッション前後の運用ルール) で十分
+
+過剰な保護回路 (直列抵抗 / polyfuse / TP4057 R30 swap) は **基本不要**. 1 本 / 100 mA レベルの追加負荷で RoverC 5V boost が sag するリスクは事実上ない. 半田部の物理保護として **熱収縮 + ホットボンド**で機械強度を確保する方が polyfuse より実用的.
 
 ### 必要な検証
 
-- **初回充電セッション**: 全カメラ空状態で USB-C pigtail 接続. 30 分間 RoverC Grove 5V を multimeter で連続測定. sag しなければ完了, 以降この件は気にしない. sag (5V → < 4.5V) したら下記の運用ルールに切替
-
-### sag が出た場合の運用 fallback (zero-mod)
-
-- **充電ローテ運用**: 同時通電する pigtail は 1 本だけ. teleop UI の battery widget で最低電圧のカメラに繋ぎ替え. 走行中は全 pigtail 抜き
-- **オフローバー充電**: pigtail 全廃. セッション前後に各カメラを USB ハブで個別充電. ハード変更ゼロ, 手間は増える
-
-### TP4057 R30 mod (基本は不要だが SMD work 楽しいなら)
-
-各カメラ基板を開けて R30 (5.1 K) を 10 K – 15 K に交換すれば ICHRG が 238 mA → 80 – 120 mA に低減. 3 台分でも 240 – 360 mA. **初回充電セッションの sag リスクをほぼゼロにする予防的 mod**だが, 上記の検証で問題が出なければ実施不要.
+- **動作確認**: pigtail 接続後, StickC を完全枯渇まで放電 → RoverC 起動して pigtail 経由で接続 → battery widget の電圧上昇を確認 (= TP4057 が VBUS から給電を受けて充電している証拠)
+- **sag 監視**: pigtail 接続中に RoverC Grove 5V を multimeter で測定. 5V > 4.5V を維持していれば常用に問題なし
 
 ---
 
@@ -285,8 +288,8 @@ TP4057 は CC-CV 充電で, 「714 mA 連続」状態は **LiPo が空のとき�
 |---|---|---|
 | 段1 | 2026-04 | Python クライアント側の WASD UI（学生が複数オペレータ UI のベースに発展可） |
 | 段2 | 2026-04 | 単眼画像での視覚的タスク試行 |
-| 段3 | TBD | 時刻整合データ取得 |
-| 段4 | 2026-04（部分） | ステレオデータ取得（校正手順は TBD） |
+| 段3 | TBD | 時刻整合データ取得（カメラ↔ロボット状態） |
+| 段4 | 廃止（2026-06-09） | 単眼化により廃止 |
 | 段5 | TBD | プラットフォーム全部 |
 
 ---
@@ -300,7 +303,7 @@ TP4057 は CC-CV 充電で, 「714 mA 連続」状態は **LiPo が空のとき�
 - 詳細: CLAUDE.md ハード調査結果セクション
 
 ### I2C bus 競合
-- StickC Plus2 master が RoverC（0x38）+ カメラ（0x40, 0x41）を駆動
+- StickC Plus2 master が RoverC（0x38）+ 前方カメラ（0x40）を駆動（単眼化で slave は 1 台に減り、競合余地はさらに低下）
 - バス占有率は 5% 未満想定（モータ 50Hz × 5byte + 時刻 1Hz × 8byte）
 - 競合発生時はモータ更新と時刻配信のタイミング設計で分離
 - 最悪ケース: カメラ用に別 I2C バス（Plus2 Grove GPIO 32/33 を使う）

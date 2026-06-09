@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Generate secrets.h for every sketch under src/ from config.json.
+"""Generate secrets.h for every sketch under arduino_src/ from config.json.
 
-A "sketch" is any immediate subdirectory of src/ that contains a .ino file.
-The same secrets.h content is written into each sketch directory so that
-sketches share WiFi credentials and any common configuration values.
+A "sketch" is any immediate subdirectory of arduino_src/ that contains a
+.ino file. The same secrets.h content is written into each sketch directory
+so that sketches share WiFi credentials and any common configuration values.
 
 Run from repo root:
-    python3 scripts/gen_secrets.py [--config config.json] [--src-dir src]
+    python3 scripts/gen_secrets.py [--config config.json] [--src-dir arduino_src]
 """
 import argparse
 import json
@@ -32,7 +32,7 @@ def main() -> int:
     repo_root = Path(__file__).resolve().parent.parent
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default=str(repo_root / "config.json"))
-    parser.add_argument("--src-dir", default=str(repo_root / "src"))
+    parser.add_argument("--src-dir", default=str(repo_root / "arduino_src"))
     args = parser.parse_args()
 
     config_path = Path(args.config)
@@ -46,7 +46,7 @@ def main() -> int:
     port = int(cfg["server"]["port"])
     rate_hz = int(cfg["control"]["rate_hz"])
     failsafe_ms = int(cfg["control"]["failsafe_ms"])
-    max_motor = int(cfg["control"]["max_motor"])
+    max_motor = int(cfg["motor"]["max_motor"])
 
     camera_cfg = cfg.get("camera", {})
     announce_port = int(camera_cfg.get("announce_port", 4211))
@@ -59,7 +59,7 @@ def main() -> int:
         print(f"control.rate_hz out of range: {rate_hz}", file=sys.stderr)
         return 1
     if not 0 <= max_motor <= 127:
-        print(f"control.max_motor out of range: {max_motor}", file=sys.stderr)
+        print(f"motor.max_motor out of range: {max_motor}", file=sys.stderr)
         return 1
     if not 1 <= announce_port <= 65535:
         print(f"camera.announce_port out of range: {announce_port}", file=sys.stderr)

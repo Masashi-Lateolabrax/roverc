@@ -14,33 +14,29 @@
 
 // I2C wiring on the RoverC HAT bus (StickC Plus2 P1 STICKIO header).
 // SDA = G0 (pin 5), SCL = G26 (pin 3). Single bus carries the RoverC motor
-// STM32 (0x38) plus all three cameras (left=0x40, right=0x41, fisheye=0x42)
-// via a soldered 1->3 cable splice from the HAT Grove out.
+// STM32 (0x38) plus the single front camera (front=0x40), wired straight
+// from the HAT Grove out (no cable splice now that stereo/fisheye are gone).
 static constexpr int PIN_SDA = 0;
 static constexpr int PIN_SCL = 26;
-// 50 kHz: conservative for the multi-stub topology after the splice, well
-// below the 400 pF / cable capacitance limit at 3 cameras + 30 cm leads.
+// 50 kHz: conservative for the ~30 cm Grove lead, well below the 400 pF
+// cable-capacitance limit. Kept from the multi-camera era for margin.
 static constexpr uint32_t I2C_HZ = 50000;
 
 static constexpr uint8_t ROVERC_ADDR = 0x38;
 static constexpr uint8_t REG_MOTOR = 0x00;
 
-// Cameras serve a 10-byte status frame on master read:
+// The front camera serves a 10-byte status frame on master read:
 //   [0..3] IPv4 octets  [4..5] http_port (LE)  [6] camera_ok  [7] wifi_ok
 //   [8..9] vbat_mv (LE)
-static constexpr uint8_t CAM_ADDR_LEFT = 0x40;
-static constexpr uint8_t CAM_ADDR_RIGHT = 0x41;
-static constexpr uint8_t CAM_ADDR_FISHEYE = 0x42;
+static constexpr uint8_t CAM_ADDR_FRONT = 0x40;
 static constexpr size_t CAM_FRAME_SIZE = 10;
 static constexpr uint32_t CAM_PROBE_INTERVAL_MS = 1000;
 
-// MJPEG send-token broadcast. Round-robin a 1-byte write to each camera
-// at CAM_TOKEN_PERIOD_MS so the cycle stays under TOKEN_TIMEOUT_MS=200ms
-// fall-through (50 ms x 3 = 150 ms cycle, ~6.7 Hz per camera).
+// MJPEG send-token. A 1-byte write to the camera at CAM_TOKEN_PERIOD_MS
+// keeps it under its TOKEN_TIMEOUT_MS=200ms fall-through (50 ms -> 20 Hz).
 static constexpr uint32_t CAM_TOKEN_PERIOD_MS = 50;
 static constexpr uint8_t  CAM_TOKEN_BYTE = 0x01;
 static uint32_t g_next_token_ms = 0;
-static uint8_t  g_token_target = 0;  // 0=left, 1=right, 2=fisheye
 
 // 25 Hz binary telemetry push to the last UDP sender (the PC client). 25 Hz
 // is slow enough to coexist with two MJPEG streams on the same 2.4 GHz radio
@@ -59,17 +55,27 @@ static uint32_t g_next_tel_ms = 0;
 //   [4..7]   k_steady               (float LE) -- STEADY gain, p = k * s
 //   [8..31]  kick c[0..POLY_MAX_ORDER]    (POLY_NCOEFS floats LE, monomial in t)
 //   [32..55] brake c[0..POLY_MAX_ORDER]   (POLY_NCOEFS floats LE, monomial in t)
-// Total 56 bytes. Idempotent on (wheel, dir); PC repeats each chunk to absorb
+//   [56..57] kick_dur_ms            (uint16 LE) -- per-cell KICK phase length
+//   [58..59] brake_dur_ms           (uint16 LE) -- per-cell BRAKE phase length
+// Total 60 bytes. Idempotent on (wheel, dir); PC repeats each chunk to absorb
 // LWIP rx-queue drops (rx queue ~6-8 packets), and 8 chunks (4 wheels × 2 dirs)
-// form the full coefficient table.
+// form the full coefficient table. Phase durations are per (wheel, dir), so
+// every cell carries its own kick/brake length.
 static constexpr uint8_t  POLY_MAX_ORDER = 5;
 static constexpr size_t   POLY_NCOEFS = POLY_MAX_ORDER + 1;
 static constexpr uint8_t  POLY_CHUNK_MAGIC = 0xC0;
-static constexpr size_t   POLY_CHUNK_BYTES = 4 + 4 + POLY_NCOEFS * 4 + POLY_NCOEFS * 4;
-static_assert(POLY_CHUNK_BYTES == 56, "wire format size drift");
+static constexpr size_t   POLY_CHUNK_BYTES = 4 + 4 + POLY_NCOEFS * 4 + POLY_NCOEFS * 4 + 2 + 2;
+static_assert(POLY_CHUNK_BYTES == 60, "wire format size drift");
 
 // Per-wheel sign flips. Adjust during bring-up if a wheel spins the wrong way.
 static constexpr int8_t SIGN_M[4] = {+1, +1, +1, +1};  // FL, FR, RL, RR
+
+// PC -> StickC liveness heartbeat: a 1-byte UDP datagram (magic 0xA0).
+// The failsafe is driven SOLELY by heartbeat arrival, never by motion packets:
+// a motion command sets the setpoint and it persists until the next command,
+// while the heartbeat is the independent liveness contract -- if it lapses for
+// FAILSAFE_MS the motors are zeroed regardless of how recently a command came.
+static constexpr uint8_t HEARTBEAT_MAGIC = 0xA0;
 
 WiFiUDP udp;
 
@@ -80,10 +86,13 @@ struct Motion {
   double t = 0.0;
 };
 
+// Boot defaults for per-cell phase lengths, used until the PC pushes the
+// coefficient table (each 0xC0 chunk carries its own kick/brake durations).
+static constexpr int DEFAULT_KICK_DUR_MS = 100;
+static constexpr int DEFAULT_BRAKE_DUR_MS = 100;
+
 struct ServerConfig {
   int max_motor = MAX_MOTOR;
-  int kick_dur_ms = 0;
-  int brake_dur_ms = 100;
   bool tel_en = false;
 };
 
@@ -118,6 +127,8 @@ struct Poly1D {
 
 struct PerDirCoefs {
   float k_steady;
+  int kick_dur_ms;   // KICK phase length for this (wheel, dir)
+  int brake_dur_ms;  // BRAKE phase length for this (wheel, dir)
   Poly1D kick;
   Poly1D brake;
 };
@@ -153,7 +164,7 @@ static Motion g_cmd;
 static ServerConfig g_cfg;
 static MotorState g_motor_state[4];
 static WheelCoefs g_poly[4];
-static uint32_t g_last_packet_ms = 0;
+static uint32_t g_last_heartbeat_ms = 0;
 static uint32_t g_packets_received = 0;
 static uint32_t g_configs_received = 0;
 static uint32_t g_poly_chunks_received = 0;
@@ -163,9 +174,7 @@ static int8_t g_motors[4] = {0, 0, 0, 0};
 // Last per-wheel normalized command (m_i * norm), telemetry "s" channel.
 static float g_s_norm[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 
-static CameraState g_cam_left = {CAM_ADDR_LEFT};
-static CameraState g_cam_right = {CAM_ADDR_RIGHT};
-static CameraState g_cam_fisheye = {CAM_ADDR_FISHEYE};
+static CameraState g_cam_front = {CAM_ADDR_FRONT};
 static uint32_t g_next_cam_tick_ms = 0;
 
 static const uint32_t CONTROL_PERIOD_MS = 1000UL / CONTROL_RATE_HZ;
@@ -185,12 +194,6 @@ static int8_t clamp_int8(int v) {
   return static_cast<int8_t>(v);
 }
 
-static float clampf(float v, float lo, float hi) {
-  if (v < lo) return lo;
-  if (v > hi) return hi;
-  return v;
-}
-
 // Evaluate Σ c[k] * t^k over k ∈ {0..POLY_MAX_ORDER}. Slots beyond the
 // calibrated polynomial degree are zero-padded by the PC, so this is just
 // a fixed-size Horner-like loop.
@@ -206,14 +209,17 @@ static float eval_poly1d(const Poly1D &p, float t) {
 
 // Default at boot: k_steady = 1 (p = s during STEADY), kick polynomial linear
 // 0 → 1 over T_k (matches the f_k(0)=0, f_k(T_k)=k boundary conditions),
-// brake polynomial all-zero (no active brake until calibrate.py pushes
-// constraint-respecting coefficients). T_k_sec = 0 collapses kick to zero.
+// brake polynomial all-zero (no active brake until constraint-respecting
+// coefficients are pushed, e.g. via teleop --coefs). T_k_sec = 0 collapses
+// kick to zero.
 static void init_poly_defaults() {
-  float Tk_sec = static_cast<float>(g_cfg.kick_dur_ms) / 1000.0f;
+  float Tk_sec = static_cast<float>(DEFAULT_KICK_DUR_MS) / 1000.0f;
   for (int i = 0; i < 4; ++i) {
     PerDirCoefs *dirs[2] = {&g_poly[i].fwd, &g_poly[i].bwd};
     for (int d = 0; d < 2; ++d) {
       dirs[d]->k_steady = 1.0f;
+      dirs[d]->kick_dur_ms = DEFAULT_KICK_DUR_MS;
+      dirs[d]->brake_dur_ms = DEFAULT_BRAKE_DUR_MS;
       memset(&dirs[d]->kick, 0, sizeof(Poly1D));
       memset(&dirs[d]->brake, 0, sizeof(Poly1D));
       if (Tk_sec > 0.0f) {
@@ -238,9 +244,13 @@ static void apply_poly_chunk(const uint8_t *buf, int n) {
   float k_steady;
   float kick_c[POLY_NCOEFS];
   float brake_c[POLY_NCOEFS];
+  uint16_t kick_dur_ms;
+  uint16_t brake_dur_ms;
   memcpy(&k_steady, buf + 4, 4);
   memcpy(kick_c,    buf + 8, POLY_NCOEFS * 4);
   memcpy(brake_c,   buf + 8 + POLY_NCOEFS * 4, POLY_NCOEFS * 4);
+  memcpy(&kick_dur_ms,  buf + 8 + POLY_NCOEFS * 8, 2);
+  memcpy(&brake_dur_ms, buf + 8 + POLY_NCOEFS * 8 + 2, 2);
 
   if (!isfinite(k_steady) || k_steady < 0.0f) {
     Serial.printf("poly chunk reject: bad k_steady %.3f at w=%u d=%u\n",
@@ -257,6 +267,8 @@ static void apply_poly_chunk(const uint8_t *buf, int n) {
 
   PerDirCoefs *target = (dir == 0) ? &g_poly[wheel].fwd : &g_poly[wheel].bwd;
   target->k_steady = k_steady;
+  target->kick_dur_ms = kick_dur_ms;
+  target->brake_dur_ms = brake_dur_ms;
   memcpy(target->kick.c,  kick_c,  POLY_NCOEFS * 4);
   memcpy(target->brake.c, brake_c, POLY_NCOEFS * 4);
   g_poly_chunks_received++;
@@ -306,12 +318,17 @@ static void compute_motors(float vx, float vy, float wz, uint32_t now, int8_t ou
       st.phase_start_ms = now;
     }
 
+    // Phase durations are per (wheel, dir): KICK uses the current direction's
+    // cell, BRAKE uses the snapshot direction taken at STEADY -> BRAKE entry.
+    const PerDirCoefs &kick_cell = (sign > 0) ? g_poly[i].fwd : g_poly[i].bwd;
+    const PerDirCoefs &brake_cell =
+        (st.s_pre_sign > 0) ? g_poly[i].fwd : g_poly[i].bwd;
     uint32_t tau = now - st.phase_start_ms;
-    if (st.phase == PH_KICK && tau >= static_cast<uint32_t>(g_cfg.kick_dur_ms)) {
+    if (st.phase == PH_KICK && tau >= static_cast<uint32_t>(kick_cell.kick_dur_ms)) {
       st.phase = PH_STEADY;
       st.phase_start_ms = now;
       tau = 0;
-    } else if (st.phase == PH_BRAKE && tau >= static_cast<uint32_t>(g_cfg.brake_dur_ms)) {
+    } else if (st.phase == PH_BRAKE && tau >= static_cast<uint32_t>(brake_cell.brake_dur_ms)) {
       st.phase = PH_IDLE;
       st.phase_start_ms = now;
       tau = 0;
@@ -494,9 +511,7 @@ static void push_camera_state() {
   if (g_last_sender == IPAddress(0, 0, 0, 0) || g_last_sender_port == 0) return;
   JsonDocument doc;
   JsonObject cam = doc["cam"].to<JsonObject>();
-  emit_camera(cam, "left", g_cam_left);
-  emit_camera(cam, "right", g_cam_right);
-  emit_camera(cam, "fisheye", g_cam_fisheye);
+  emit_camera(cam, "front", g_cam_front);
 
   char buf[256];
   size_t n = serializeJson(doc, buf, sizeof(buf));
@@ -564,40 +579,12 @@ static void apply_config(JsonObjectConst cfg) {
     if (mx > 127) mx = 127;
     g_cfg.max_motor = mx;
   }
-  if (cfg["kdur"].is<int>()) {
-    int kd = cfg["kdur"];
-    if (kd < 0) kd = 0;
-    if (kd > 2000) kd = 2000;
-    g_cfg.kick_dur_ms = kd;
-  }
-  if (cfg["bdur"].is<int>()) {
-    int bd = cfg["bdur"];
-    if (bd < 0) bd = 0;
-    if (bd > 2000) bd = 2000;
-    g_cfg.brake_dur_ms = bd;
-  }
   if (cfg["tel"].is<bool>()) {
     g_cfg.tel_en = cfg["tel"];
   }
-  // Legacy scalar trim arrays `tf` / `tb` are redirected to per-(wheel, dir)
-  // STEADY gain so existing teleop sliders still tune drive balance. The
-  // `kf` / `kb` arrays are obsolete -- KICK is now the polynomial f_k(t)
-  // pushed via 0xC0 chunks, no scalar-equivalent. Silently ignored if
-  // present in older clients.
-  if (cfg["tf"].is<JsonArrayConst>()) {
-    JsonArrayConst arr = cfg["tf"];
-    for (int i = 0; i < 4 && i < (int)arr.size(); ++i) {
-      float v = clampf(arr[i] | 1.0f, 0.0f, 4.0f);
-      g_poly[i].fwd.k_steady = v;
-    }
-  }
-  if (cfg["tb"].is<JsonArrayConst>()) {
-    JsonArrayConst arr = cfg["tb"];
-    for (int i = 0; i < 4 && i < (int)arr.size(); ++i) {
-      float v = clampf(arr[i] | 1.0f, 0.0f, 4.0f);
-      g_poly[i].bwd.k_steady = v;
-    }
-  }
+  // Motor characteristics (k_steady, kick/brake polynomials and their phase
+  // durations) arrive only via the 0xC0 chunks; the JSON cfg envelope no
+  // longer carries kdur/bdur or the legacy tf/tb/kf/kb scalar trims.
   g_configs_received++;
 }
 
@@ -608,6 +595,16 @@ static void poll_udp() {
   static uint8_t buf[512];
   int n = udp.read(buf, sizeof(buf));
   if (n <= 0) return;
+
+  // 1-byte liveness heartbeat (magic 0xA0): refresh the failsafe timer and
+  // remember the sender for telemetry / camera-state routing. Carries no
+  // motion -- the setpoint is owned by the motion packets below.
+  if (n >= 1 && buf[0] == HEARTBEAT_MAGIC) {
+    g_last_heartbeat_ms = millis();
+    g_last_sender = udp.remoteIP();
+    g_last_sender_port = udp.remotePort();
+    return;
+  }
 
   // Binary polynomial cfg chunk -- magic byte distinguishes it from the
   // ASCII JSON envelope (which always starts with '{').
@@ -630,11 +627,12 @@ static void poll_udp() {
     return;  // config-only packet; do not update motion
   }
 
+  // Motion sets the setpoint and it persists until the next motion packet;
+  // it does NOT refresh the failsafe timer (that is the heartbeat's job).
   g_cmd.vx = doc["vx"] | 0.0f;
   g_cmd.vy = doc["vy"] | 0.0f;
   g_cmd.wz = doc["wz"] | 0.0f;
   g_cmd.t = doc["t"] | 0.0;
-  g_last_packet_ms = millis();
   g_last_sender = udp.remoteIP();
   g_last_sender_port = udp.remotePort();
   g_packets_received++;
@@ -645,7 +643,7 @@ static void update_lcd() {
   if (now < g_next_lcd_ms) return;
   g_next_lcd_ms = now + 200;
 
-  uint32_t age = now - g_last_packet_ms;
+  uint32_t age = now - g_last_heartbeat_ms;
   bool failsafe = (age > FAILSAFE_MS);
 
   // Header (SSID + IP) occupies y=0..32 at textSize 2; body starts below.
@@ -681,11 +679,7 @@ static void update_lcd() {
     return RED;
   };
   M5.Display.print("cam ");
-  M5.Display.setTextColor(cam_color(g_cam_left), BLACK);
-  M5.Display.print("L ");
-  M5.Display.setTextColor(cam_color(g_cam_right), BLACK);
-  M5.Display.print("R ");
-  M5.Display.setTextColor(cam_color(g_cam_fisheye), BLACK);
+  M5.Display.setTextColor(cam_color(g_cam_front), BLACK);
   M5.Display.print("F\n");
   M5.Display.setTextColor(WHITE, BLACK);
 
@@ -727,7 +721,7 @@ void setup() {
   Serial.begin(115200);
   connect_wifi();
 
-  g_last_packet_ms = millis() - FAILSAFE_MS - 1;  // start in failsafe
+  g_last_heartbeat_ms = millis() - FAILSAFE_MS - 1;  // start in failsafe
   g_next_tick_ms = millis();
   g_next_tel_ms = millis();
 }
@@ -740,7 +734,7 @@ void loop() {
   }
   if (M5.BtnB.wasPressed()) {
     g_cmd = Motion{};
-    g_last_packet_ms = millis() - FAILSAFE_MS - 1;
+    g_last_heartbeat_ms = millis() - FAILSAFE_MS - 1;
   }
 
   poll_udp();
@@ -752,7 +746,7 @@ void loop() {
       g_next_tick_ms = now + CONTROL_PERIOD_MS;
     }
 
-    bool failsafe = (now - g_last_packet_ms > FAILSAFE_MS);
+    bool failsafe = (now - g_last_heartbeat_ms > FAILSAFE_MS);
     float vx = failsafe ? 0.0f : g_cmd.vx;
     float vy = failsafe ? 0.0f : g_cmd.vy;
     float wz = failsafe ? 0.0f : g_cmd.wz;
@@ -782,9 +776,7 @@ void loop() {
       recover_i2c_bus();
       g_probe_fails_since_last_ok = 0;
     }
-    probe_camera(g_cam_left, Wire, &g_probe_fails_since_last_ok);
-    probe_camera(g_cam_right, Wire, &g_probe_fails_since_last_ok);
-    probe_camera(g_cam_fisheye, Wire, &g_probe_fails_since_last_ok);
+    probe_camera(g_cam_front, Wire, &g_probe_fails_since_last_ok);
     push_camera_state();
   }
 
@@ -793,12 +785,7 @@ void loop() {
     if (static_cast<int32_t>(now - g_next_token_ms) > 200) {
       g_next_token_ms = now + CAM_TOKEN_PERIOD_MS;  // catch up after a stall
     }
-    switch (g_token_target) {
-      case 0:  send_camera_token(CAM_ADDR_LEFT, Wire); break;
-      case 1:  send_camera_token(CAM_ADDR_RIGHT, Wire); break;
-      default: send_camera_token(CAM_ADDR_FISHEYE, Wire); break;
-    }
-    g_token_target = (g_token_target + 1) % 3;
+    send_camera_token(CAM_ADDR_FRONT, Wire);
   }
 
   update_lcd();

@@ -1,8 +1,8 @@
-# roverc — 卒研プロジェクト
+# roverc — Undergraduate Thesis Project
 
-## このプロジェクトは何か
+## What this project is
 
-学部生（就職予定）の卒業研究のため、M5StickC Plus2 + RoverC（メカナム車）+ PC（Python, LAN経由）を題材に、研究テーマ・実装プラットフォームを構築する。
+For an undergraduate student's (heading to industry) graduation thesis, build a research theme and implementation platform around M5StickC Plus2 + RoverC (a mecanum-wheel car) + PC (Python, over LAN).
 
 ## Information Architecture
 
@@ -10,306 +10,306 @@
 
 - **Docs** — Long-lived knowledge that is expensive to obtain or reproduce, and that collaborators need to share. Code design decisions (settled through dialogue), experiment results (long to run), literature surveys (long to research), development policies (settled through dialogue). *(The plugin is agnostic to the documentation tool — Zola, mdBook, Sphinx, plain markdown in `docs/`, etc. Each project picks its own.)*
 - **Memory** (`.claude/memories/` project; `~/.claude/memories/` global) — The AI self-reinforcement and reference system. Entries are markdown files in three subfolders: `static/unfold/` (always injected, with how-to detail), `static/fold/` (always injected as pointer only — for handoff notes, file trees, reference material that should be available every session), `dynamic/` (injected on semantic match with the prompt). One entry = one theme. Global memories cross projects.
-- **Skills** (`.claude/skills/<name>/SKILL.md`) — Named bundles of task-specific instructions with tool-permission scoping. Each `SKILL.md` has a `description` explaining what the skill does and `allowed-tools` listing the tools it may use. Examples from this plugin: `commit`, `pull-request`, `issues`, `clean-branch`. **Skills do not always fire on their own**, so a project's `CLAUDE.md` typically keeps a dispatch table (e.g. *"When committing, use `lab-tool-cc-plugin:commit`"*) to reinforce invocation. Those reinforcement entries are load-bearing and belong in `CLAUDE.md` — they are not candidates for offloading.
+- **Skills** (`.claude/skills/<name>/SKILL.md`) — Named bundles of task-specific instructions with tool-permission scoping. Each `SKILL.md` has a `description` explaining what the skill does and `allowed-tools` listing the tools it may use. Examples from this plugin: `commit`, `pull-request`, `issues`, `clean-branch`. **Skills do not always fire on their own**, so a project's `CLAUDE.md` typically keeps a dispatch table (e.g. *"When committing, use `git-cc-plugin:git-for-claude`"*) to reinforce invocation. Those reinforcement entries are load-bearing and belong in `CLAUDE.md` — they are not candidates for offloading.
 - **CLAUDE.md** (this file) — Kept compact. Project-specific operating context that must load in every session: what the project is, which stores exist, and a dispatch table pointing to the relevant store or skill for each concern. Behavior-shaping rules belong in Memory, not here.
 
-## ストア / スキル ディスパッチ
+## Store / Skill dispatch
 
-- **コミット作成時** → `lab-tool-cc-plugin:commit` を使用
-- **PR 作成・操作時** → `lab-tool-cc-plugin:pull-request` を使用
-- **Issue 操作時** → `lab-tool-cc-plugin:issues` を使用
-- **Memory エントリ操作時** → `lab-tool-cc-plugin:memory` を使用
-- **プラットフォーム bring-up 詳細** → `docs/platform_bringup.md`
-- **カメラストリーミング debug 知見**（MJPEG / urllib `read1` coalescing / Wire1 self-heal / I2C bus recovery / XCLK 8MHz 等）→ `docs/camera_streaming_lessons.md`
-- **別ライン研究プログラム候補（進学予定学生向け）** → `docs/async_stereo_interpolation.md`
-- **魚眼カメラ + IMU による VIO 速度推定ロードマップ** → `docs/fisheye_vio_roadmap.md`
-- **RoverC ハード仕様** → `docs/roverc_datasheet.pdf` / `docs/roverc_pro_datasheet.pdf` / `docs/roverc_i2c_protocol.pdf`
+- **Commit / PR / Issue / Milestone operations** → use `git-cc-plugin:git-for-claude` (the only git plugin enabled in this project; raw `git add`/`commit`/`push` are denied, and this skill is the only write path; a single skill covers commit/PR/issue).
+- **Memory entry operations** → no dedicated skill is installed (`lab-tool` is disabled). Edit files under `.claude/memories/` directly.
+- ⚠ Before dispatching, always confirm the skill appears in this session's available-skills list. A skill from a plugin not in `enabledPlugins` (`.claude/settings.local.json`) cannot be invoked.
+- **Platform bring-up detail** → `docs/platform_bringup.md`
+- **Camera-streaming debug lessons** (MJPEG / urllib `read1` coalescing / Wire1 self-heal / I2C bus recovery / XCLK 8MHz, etc.) → `docs/camera_streaming_lessons.md`
+- **Alternate-line research program candidate (for students planning grad school)** (assumes stereo; not mounted on the current rig = forward monocular, a future line) → `docs/async_stereo_interpolation.md`
+- **Fisheye camera + IMU VIO velocity-estimation roadmap** (assumes fisheye; not mounted on the current rig = forward monocular, a future line) → `docs/fisheye_vio_roadmap.md`
+- **RoverC hardware spec** → `docs/roverc_datasheet.pdf` / `docs/roverc_pro_datasheet.pdf` / `docs/roverc_i2c_protocol.pdf`
 - **StickC Plus2 schematic** → `docs/stickc_plus2_schematic.pdf`
 
-## 関係者
+## People
 
-- **指導者**（このリポジトリのオーナー）：複雑系・スワーム研究の経験を持つ。研究プログラムの設計者
-- **学生**（実装担当）：プログラミングほぼ未経験、ハードよりを好む、就職予定（D進なし）
+- **Advisor** (owner of this repo): has experience in complex-systems / swarm research. The designer of the research program.
+- **Student** (implementer): almost no programming experience, prefers hardware-leaning work, heading to industry (no PhD track).
 
-## 作業分担
+## Division of work
 
-### 指導者作業範囲：プラットフォーム bring-up
-プラットフォーム基盤（5段：RoverC 遠隔操作 → カメラ単眼 → 時間同期 → ステレオ化 → 性能評価）を**指導者単独で完遂**し、学生に検証済プラットフォームとして引き渡す。詳細は `docs/platform_bringup.md`。
+### Advisor's scope: platform bring-up
+The advisor **completes the platform foundation single-handedly** (RoverC teleoperation → monocular camera → time synchronization → performance evaluation; the old stage 4 "stereo conversion" was retired by the 2026-06-09 switch to monocular) and hands it off to the student as a verified platform. Detail in `docs/platform_bringup.md`.
 
-### 学生作業範囲：Mediator 層
-引き渡されたプラットフォーム上で、複数オペレータ UI、同期記録、ベースライン Mediator 実装、実験運営、データ品質検証、卒論執筆を担当する。詳細は本ファイル「卒研第一セルの構成」「学生作業の年間スケジュール」。
+### Student's scope: the Mediator layer
+On the handed-off platform, the student is responsible for the multi-operator UI, synchronized recording, baseline Mediator implementations, running experiments, data-quality verification, and writing the thesis. Detail in this file's "First-cell composition of the thesis" and "Student's annual schedule" sections.
 
-## 関連ドキュメント
+## Related documents
 
-- `docs/platform_bringup.md`: 指導者作業のプラットフォーム bring-up 5段ロードマップ
-- `docs/async_stereo_interpolation.md`: 別ライン研究プログラム候補（進学予定学生向けに温存。本卒研 = Mediator プログラムとは独立）
-- `docs/fisheye_vio_roadmap.md`: Timer Camera F + IMU 単眼魚眼 VIO による速度推定ロードマップ（platform bring-up と独立、段3 完了後に着手可）
+- `docs/platform_bringup.md`: the advisor's 5-stage platform bring-up roadmap
+- `docs/async_stereo_interpolation.md`: alternate-line research program candidate (preserved for students planning grad school; independent of this thesis = the Mediator program)
+- `docs/fisheye_vio_roadmap.md`: velocity-estimation roadmap via Timer Camera F + IMU monocular fisheye VIO (independent of platform bring-up; can be started after stage 3 is complete)
 
-## 研究の構造
+## Structure of the research
 
-### 上位フレーム（指導者の長期研究プログラム）
+### Upper frame (the advisor's long-term research program)
 
-**「競合する複数のプレイヤー間を適切に調停するシステムの構築」**
+**"Building systems that appropriately mediate among competing players."**
 
-具体的には：複数オペレータが1台のロボットを同時操縦する際の **Mediator（調停器）** の設計を、Mediator × Domain の二次元経験マップとして埋めていく長期プログラム。
+Concretely: a long-term program that fills in a two-dimensional Mediator × Domain experience map for the design of a **Mediator** when multiple operators drive a single robot simultaneously.
 
-理論的背景は社会選択理論（Arrow の不可能性定理など）。完璧な調停器は存在しないという演繹的事実の上で、**経験的に「良い Mediator の条件」を抽出**することが最終目標。
+The theoretical background is social choice theory (Arrow's impossibility theorem, etc.). On the deductive fact that no perfect mediator exists, the ultimate goal is to **empirically extract "the conditions for a good Mediator."**
 
-### 大きなゴール（複数学生・年単位）
+### The big goal (multiple students, on a multi-year scale)
 
-**学習型 Mediator（NNベース融合器）の構築と評価**
+**Building and evaluating a learning-based Mediator (an NN-based fusion engine)**
 
-NNに（状況 + 複数オペレータの指示）を入力し、誰のどの指示にどう重みをかけるか、または最終指令そのものを生成させる。クラウドソーシング集約（Dawid-Skene系）の実時間化・連続値化に相当。
+Feed the NN (the situation + the instructions of multiple operators) and have it decide how to weight whose instruction and which, or generate the final command itself. This amounts to a real-time, continuous-valued version of crowdsourcing aggregation (the Dawid-Skene family).
 
-### 今年の卒研（学生の責任範囲）
+### This year's thesis (the student's responsibility)
 
-**学習型 Mediator 研究のためのデータ収集プラットフォーム構築**
+**Building a data-collection platform for learning-based Mediator research**
 
-学生はML本体には触れず、その**前段階**を担当する。具体的には3層：
+The student does not touch the ML core itself but handles the **preliminary stage** to it. Concretely, three layers:
 
-1. **データ収集環境の構築手段の確立**
-   - 物理タスク環境の標準化（障害物配置、コース、ゴール）
-   - 校正手順、再現性のための文書化
-   - 成果物：実験プロトコル + チェックリスト + 校正手順書
+1. **Establishing the means to build the data-collection environment**
+   - Standardizing the physical task environment (obstacle placement, course, goal)
+   - Calibration procedures, documentation for reproducibility
+   - Deliverables: experiment protocol + checklist + calibration procedure manual
 
-2. **データ収集プラットフォーム（システム）**
-   - 複数オペレータが入力できるUI（ジョイスティック / ブラウザ / キーボード）
-   - StickC経由でのRoverC指令送信
-   - 同期取りつつ全データ記録（各人の入力、ロボット状態、タスク状況、時刻）
-   - ML学習に使える形式での出力（CSV / JSONL / parquet など）
-   - 成果物：Pythonライブラリ + UI + ドキュメント
+2. **The data-collection platform (the system)**
+   - A UI multiple operators can input to (joystick / browser / keyboard)
+   - Sending RoverC commands via the StickC
+   - Recording all data while keeping it synchronized (each person's input, robot state, task status, timestamps)
+   - Output in a form usable for ML training (CSV / JSONL / parquet, etc.)
+   - Deliverables: Python library + UI + documentation
 
-3. **実データの収集と検証**
-   - プラットフォームを使った実セッション運営
-   - データ品質検証（ノイズ、欠損、同期ずれの定量化）
-   - **ベースラインとして固定 Mediator 数種**を実装し、データを揃える（averaging, dominance, voting あたり2-3種）
-   - 成果物：データセット + 品質レポート + ベースライン結果
+3. **Collecting and verifying real data**
+   - Running real sessions using the platform
+   - Data-quality verification (quantifying noise, dropouts, sync skew)
+   - Implement a few **fixed Mediators as baselines** and gather data with them (around 2-3 of averaging, dominance, voting)
+   - Deliverables: dataset + quality report + baseline results
 
-## 卒論の物語
+## The thesis narrative
 
-> **問題**：学習型Mediator研究は複数オペレータの高品質な実時間データを必要とするが、既存収集はad hoc・ハプティックデバイス前提で敷居が高く再現性が低い。
+> **Problem**: Learning-based Mediator research needs high-quality real-time data from multiple operators, but existing collection is ad hoc, assumes haptic devices, has a high barrier to entry, and is poorly reproducible.
 >
-> **目的**：低コストハード（RoverC級）で、複数オペレータの実時間操縦データを再現性良く収集できるプラットフォームと方法論を確立する。
+> **Objective**: Establish a platform and methodology that can reproducibly collect real-time multi-operator teleoperation data on low-cost hardware (RoverC class).
 >
-> **成果**：上記3層 + 初期データセット + ベースライン Mediator 結果。
+> **Outcome**: The three layers above + an initial dataset + baseline Mediator results.
 >
-> **位置付け**：本基盤は、後続の学習型Mediator研究を可能にする。Mediator × Domain 経験マップ構築の第一歩である。
+> **Positioning**: This foundation enables subsequent learning-based Mediator research. It is the first step in building the Mediator × Domain experience map.
 
-## 卒研第一セルの構成
+## First-cell composition of the thesis
 
-### ハード
+### Hardware
 - RoverC × 1
-- M5StickC Plus2 × 1（運用、2026-04-26 確定）
-- M5StickC 無印（予備、swap 用）
-- M5Stack Timer Camera X × 5（運用2 = 前方ステレオ on RoverC、予備3）
-- M5Stack Timer Camera F × 1（魚眼、在庫。`docs/fisheye_vio_roadmap.md` 経由で VIO 速度推定用に搭載予定）
-- PC × 1（Python開発）
-- 入力装置：ジョイスティック or キーボード × 2人分
+- M5StickC Plus2 × 1 (operational, confirmed 2026-04-26)
+- M5StickC (plain, spare, for swap)
+- M5Stack Timer Camera X × 5 (1 operational = forward monocular on RoverC, 4 spare. **Changed from a forward-stereo 2-camera setup to a monocular 1-camera setup on 2026-06-09**)
+- M5Stack Timer Camera F × 1 (fisheye, in stock; not mounted on the current rig. Preserved for the future line in `docs/fisheye_vio_roadmap.md`)
+- PC × 1 (Python development)
+- Input devices: joystick or keyboard × 2 people
 
-### 通信
-- LAN経由、Python ↔ StickC ↔ RoverC（I2C）
-- プロトコルは UDP + msgpack を想定（要再検討）
-- 同期精度は明示的に測定対象とする
+### Communication
+- Over LAN, Python ↔ StickC ↔ RoverC (I2C)
+- Protocol assumed to be UDP + msgpack (subject to reconsideration)
+- Synchronization accuracy is explicitly a measurement target
 
-### 同期方式（ステレオカメラ + ロボット状態）
-- **方針：ソフトウェアタイムスタンプ + 有線 I2C 時刻同期**（2026-04-26 確定）
-- StickC Plus2 を I2C master、RoverC STM32（0x38）に加えて各カメラを slave として同バスに乗せる multi-slave 構成（カメラ：0x40, 0x41）。RoverC HAT バス (Plus2 P1 STICKIO: pin 3=G26/SCL, pin 5=G0/SDA、無印 StickC と同一配置、`stickc_plus2_schematic.pdf` で確認済) → RoverC Grove ポート → カメラ HY2.0-4P (GPIO 13=SCL, 4=SDA) で配線、既存 Grove ケーブル流用、追加配線なし
-- RoverC 公式ドキュメントの対応表記は「StickC / StickC Plus」のみで Plus2 名は未掲載だが、HAT ピン配列が無印と完全一致するため電気的に互換
-- StickC は 1Hz 程度で master 時刻（`esp_timer_get_time()`）を各カメラへブロードキャスト書き込み
-- 各 Timer Camera X はフレームごとに `camera_fb_t.timestamp` を記録、master 時刻オフセットを適用して PC 側で時刻整合フレームペアリング
-- 同期ジッタは実測して評価軸として報告（卒論の「データ品質」評価項目と整合）
-- I2C bus 占有率は 5% 未満想定（モータ 50Hz × 5byte + 時刻 1Hz × 8byte）、競合リスク低
-- ベンチテスト計画は `docs/platform_bringup.md` の 段3・段5 を参照
-- **却下案**：
-  - GPIO trigger（2026-04-25 却下）：OV3660 FSIN が Timer Camera X 基板上にパッド化されていない、esp32-camera ドライバも外部トリガ非対応（詳細はハード調査結果セクション）
-  - ESP-NOW 時刻同期（2026-04-26 却下）：カメラ DMA × ESP-NOW 同居が Timer Camera X で未検証、有線 I2C なら同等以上の精度を低リスクで達成可能と判断。ESP-NOW 関連の調査結果はハード調査結果セクションに参考情報として保持
+### Synchronization scheme (forward monocular camera + robot state)
+**2026-06-09 change**: switched from a forward-stereo 2-camera setup to a forward-monocular 1-camera setup. Inter-camera pairing (time alignment of left/right frames) is no longer needed; the remaining sync problem is only **time alignment between a single camera frame and robot state (commands / telemetry)** (needed to line up camera frames with motor commands in the recorded data).
+- **Policy: software timestamps + wired I2C time sync** (confirmed 2026-04-26, valid for monocular too)
+- Configuration with StickC Plus2 as I2C master, putting one forward camera on the same bus as a slave alongside the RoverC STM32 (0x38) (camera: 0x40). Wiring: RoverC HAT bus (Plus2 P1 STICKIO: pin 3=G26/SCL, pin 5=G0/SDA, same layout as the plain StickC, confirmed in `stickc_plus2_schematic.pdf`) → RoverC Grove port → camera HY2.0-4P (GPIO 13=SCL, 4=SDA), reusing the existing Grove cable, no extra wiring (going monocular removes the need for a cable splice)
+- RoverC's official docs only list "StickC / StickC Plus" in their compatibility table and do not mention the Plus2 name, but since the HAT pin layout matches the plain unit exactly, it is electrically compatible
+- The StickC broadcast-writes the master time (`esp_timer_get_time()`) to the camera at roughly 1Hz
+- The Timer Camera X records `camera_fb_t.timestamp` per frame; applying the master-time offset lets the PC side align it in time with robot state
+- Sync jitter is measured and reported as an evaluation axis (consistent with the thesis "data quality" evaluation items)
+- I2C bus occupancy is assumed under 5% (motor 50Hz × 5 bytes + time 1Hz × 8 bytes), low contention risk
+- For the bench-test plan, see stages 3 and 5 of `docs/platform_bringup.md`
+- **Rejected proposals** (history. Stereo-era studies of precise 2-camera sync, kept as a record of the design decisions):
+  - GPIO trigger (rejected 2026-04-25): the OV3660 FSIN is not broken out to a pad on the Timer Camera X board, and the esp32-camera driver does not support external triggering either (detail in the Hardware investigation results section)
+  - ESP-NOW time sync (rejected 2026-04-26): camera DMA coexisting with ESP-NOW is unverified on the Timer Camera X; judged that wired I2C can achieve equal-or-better accuracy at lower risk. ESP-NOW-related findings are kept as reference in the Hardware investigation results section
 
-### ベースライン Mediator（実装対象）
-1. 単純平均（averaging）
-2. 重み付きブレンド / マスタースレーブ（dominance factor）
-3. （余裕があれば）競合検知付き、または投票
+### Baseline Mediators (implementation targets)
+1. Simple averaging
+2. Weighted blend / master-slave (dominance factor)
+3. (If time permits) with conflict detection, or voting
 
-学習型 Mediator は本卒研の対象外（次年度以降）。
+The learning-based Mediator is out of scope for this thesis (next year onward).
 
-### 評価軸
-- **データ品質**：同期ジッタ、欠損率、信号対雑音比、深度精度
-- **プラットフォーム評価**：再現可能性、設定容易性、拡張性
-- **ベースライン Mediator 評価**：タスク達成度、対立頻度、脱落耐性
+### Evaluation axes
+- **Data quality**: sync jitter (camera ↔ robot state), dropout rate, signal-to-noise ratio (depth accuracy is out of scope with stereo retired)
+- **Platform evaluation**: reproducibility, ease of setup, extensibility
+- **Baseline Mediator evaluation**: task achievement, conflict frequency, dropout tolerance
 
-### 開発環境
-- **エディタ**：Zed（指導者選好、IDE は使わない）
-- **ESP32 ビルド・書き込み・モニタ**：arduino-cli（Arduino IDE 不要）
-- **必要コア**：`esp32:esp32`（Espressif、ボードマネージャ URL: `https://espressif.github.io/arduino-esp32/package_esp32_index.json`）
-- **必要ライブラリ**：M5Unified（Plus2 を含む StickC 系全対応）、esp32-camera は `esp32:esp32` 同梱
-- ボード FQBN：
-  - StickC Plus2: `esp32:esp32:m5stack_stickc_plus2`（Espressif core 3.x で追加されている想定。無ければ `m5stack_stickc_plus` で代替し M5Unified の自動ボード検出に任せる。段1 で `arduino-cli board listall | grep stickc` で確認）
-  - StickC 無印（予備）: `esp32:esp32:m5stack_stickc`
+### Development environment
+- **Editor**: Zed (advisor's preference; no IDE)
+- **ESP32 build / flash / monitor**: arduino-cli (no Arduino IDE needed)
+- **Required core**: `esp32:esp32` (Espressif, board-manager URL: `https://espressif.github.io/arduino-esp32/package_esp32_index.json`)
+- **Required libraries**: M5Unified (covers the whole StickC family including the Plus2); esp32-camera is bundled with `esp32:esp32`
+- Board FQBNs:
+  - StickC Plus2: `esp32:esp32:m5stack_stickc_plus2` (assumed to be added in Espressif core 3.x; if absent, fall back to `m5stack_stickc_plus` and let M5Unified's auto board detection handle it. Confirm in stage 1 with `arduino-cli board listall | grep stickc`)
+  - StickC plain (spare): `esp32:esp32:m5stack_stickc`
   - Timer Camera X: `esp32:esp32:m5stack_timer_cam`
-- PlatformIO / ESP-IDF への移行は卒研本実装段で再検討、ベンチテスト段では arduino-cli で完結
+- Migrating to PlatformIO / ESP-IDF will be reconsidered at the thesis main-implementation stage; the bench-test stage is fully handled with arduino-cli
 
-### 学生作業の年間スケジュール（目安）
+### Student's annual schedule (rough)
 
-前提：プラットフォーム bring-up（RoverC 遠隔操作・カメラ・時間同期・ステレオ化・性能評価）は指導者が完遂し、検証済の状態で学生に引き渡される（`docs/platform_bringup.md`）。学生は Mediator 層に集中する。
+Premise: platform bring-up (RoverC teleoperation, monocular camera, time sync, performance evaluation; the old stereo-conversion stage was retired by going monocular) is completed by the advisor and handed off to the student in a verified state (`docs/platform_bringup.md`). The student focuses on the Mediator layer.
 
-- **4〜6月**：Python 基礎 + 提供プラットフォーム使用法習得 + Arduino 軽め（StickC スケッチを読める程度） + 物理実験環境のラフ設計開始
-- **6〜8月**：物理実験環境構築（コース、障害物、ゴール、ステレオリグマウント） + ステレオ校正手順実施・文書化
-- **8〜10月**：複数オペレータ UI 実装（PC 側、キーボード × 2 を最低構成、ジョイスティック・ブラウザは余力で） + 同期記録パイプライン（Python、全ストリーム CSV/JSONL/parquet 出力）
-- **10〜12月**：ベースライン Mediator 実装（averaging / dominance / voting） + 実セッション運営とデータ収集
-- **1〜2月**：データ品質検証（同期ジッタ、欠損率、信号対雑音比） + 卒論執筆
+- **Apr-Jun**: Python basics + learning to use the provided platform + light Arduino (enough to read StickC sketches) + starting a rough design of the physical experiment environment
+- **Jun-Aug**: Building the physical experiment environment (course, obstacles, goal, forward-monocular camera mount) + camera setup and documenting the operating procedure
+- **Aug-Oct**: Implementing the multi-operator UI (PC side, keyboard × 2 as the minimum config; joystick / browser as bandwidth allows) + synchronized recording pipeline (Python, all streams output to CSV/JSONL/parquet)
+- **Oct-Dec**: Implementing the baseline Mediators (averaging / dominance / voting) + running real sessions and collecting data
+- **Jan-Feb**: Data-quality verification (sync jitter, dropout rate, signal-to-noise ratio) + writing the thesis
 
-## 制約と前提
+## Constraints and premises
 
-- 学生はプログラミング未経験 → ML訓練・複雑なシステム設計は不可、API利用や軽量実装中心
-- 1年完遂が必須（D進前提の重い理論は不可）
-- 「見える形」を重視（実機が動く映像、デモ性のある成果）
-- 研究色より工学・実証寄り。論文化は卒研段階では狙わない
-- ML本体の試行錯誤は次年度以降の学生 or 指導者の責任範囲
+- The student has no programming experience → ML training and complex system design are out; focus on API usage and lightweight implementation
+- Completing in one year is mandatory (heavy theory premised on a PhD track is out)
+- Emphasize "visible form" (footage of the real machine moving, demo-able results)
+- Engineering / empirical-leaning rather than research-flavored; publication is not targeted at the thesis stage
+- Trial-and-error on the ML core itself is the responsibility of later students or the advisor
 
-## 設計判断のメモ
+## Notes on design decisions
 
-- **新規性は卒研段階では「プラットフォームの再現性・低コスト性・ML対応設計」で出す**。手法的新規性は無理に追わない
-- **継続性はストーリーで引き寄せる**。「学習Mediatorに進める基盤を作った」が次の学生・研究者の興味を引く
-- **卒論Introには上位抽象（Mediator設計の一般問題）と長期ゴール（学習Mediator）を置き、本文は基盤構築と測定**に集中
-- 学生の就職向けには「データ収集基盤の設計・実装」「実時間ロボットシステム構築」として打ち出せる
+- **At the thesis stage, novelty comes from "platform reproducibility, low cost, and ML-ready design."** Do not force methodological novelty.
+- **Continuity is pulled in by the story.** "We built a foundation that can progress to a learning Mediator" draws the interest of the next student / researcher.
+- **Put the upper abstraction (the general problem of Mediator design) and the long-term goal (a learning Mediator) in the thesis Intro, and focus the body on foundation-building and measurement.**
+- For the student's industry prospects, this can be pitched as "design and implementation of a data-collection foundation" and "building a real-time robot system."
 
-## 既存研究の状況（要点）
+## State of prior work (key points)
 
-詳細サーベイ済み。要点：
+A detailed survey is done. Key points:
 
-- **Multi-Operator Single-Robot (MOSR) teleoperation** は2009年以降成熟（Feth, Khademian, Sirouspour 系）
-- **集約方式の比較**は Salam et al. (AAMAS 2015) と Nguyen et al. (HRI 2025) で部分的に既出
-- **Tele-Actor / Spatial Dynamic Voting** (Goldberg, ICRA 2002) が投票型集約の源流
-- **Policy blending formalism** (Dragan & Srinivasa, IJRR 2013) が融合の数学的雛形
-- **Takagi et al. (eLife 2019, 東工大)** が3-4人ハプティック協調の決定的実証（日本発）
-- **直接競合**：Nguyen et al. HRI 2025（信頼度共有1方式のみ → Mediator多様性で差別化可）
-- **AF447 BEA報告書**：averaging Mediator失敗の実例として Intro 必須
-- **空白セル**：Mediator × Domain の系統的経験マップ、社会選択理論ベースMediatorの実時間制御への翻訳、低コスト実証プラットフォーム
-- **本卒研の position**：学習型Mediator研究のための基盤構築。直接競合なし
+- **Multi-Operator Single-Robot (MOSR) teleoperation** has been mature since 2009 (the Feth, Khademian, Sirouspour lines)
+- **Comparison of aggregation methods** is partially covered by Salam et al. (AAMAS 2015) and Nguyen et al. (HRI 2025)
+- **Tele-Actor / Spatial Dynamic Voting** (Goldberg, ICRA 2002) is the origin of voting-type aggregation
+- **Policy blending formalism** (Dragan & Srinivasa, IJRR 2013) is the mathematical template for fusion
+- **Takagi et al. (eLife 2019, Tokyo Tech)** is the decisive demonstration of 3-4 person haptic collaboration (from Japan)
+- **Direct competitor**: Nguyen et al. HRI 2025 (only one confidence-sharing method → differentiate via Mediator diversity)
+- **AF447 BEA report**: required in the Intro as a real example of averaging-Mediator failure
+- **Empty cells**: a systematic Mediator × Domain experience map, translating social-choice-theory-based Mediators to real-time control, a low-cost demonstration platform
+- **This thesis's position**: building a foundation for learning-based Mediator research. No direct competitor.
 
-### 必読5本（学生に渡す）
-1. Feth et al. (2009) — MOSR用語と基本構図
+### The 5 must-reads (to hand to the student)
+1. Feth et al. (2009) — MOSR terminology and the basic framing
 2. Goldberg & Song (ICRA 2002) — Tele-Actor / SDV
-3. Salam et al. (AAMAS 2015) — 集約方式経験比較（最近接競合）
+3. Salam et al. (AAMAS 2015) — empirical comparison of aggregation methods (closest competitor)
 4. Dragan & Srinivasa (IJRR 2013) — policy blending formalism
-5. Takagi et al. (eLife 2019) — 日本発、ハプティック多人数協調
+5. Takagi et al. (eLife 2019) — from Japan, multi-person haptic collaboration
 
-加えて Losey et al. (2018) Appl. Mech. Rev. のarbitrationレビュー、AF447 BEA報告書。
+Plus Losey et al. (2018) Appl. Mech. Rev. arbitration review, and the AF447 BEA report.
 
-### 融合方式ごとの先行研究（卒論本文・関連研究節で使う）
+### Prior work per fusion method (for use in the thesis body / related-work section)
 
-| 融合方式 | 代表研究 | 備考 |
+| Fusion method | Representative work | Notes |
 |---|---|---|
-| 算術平均 | Airbus サイドスティック / AF447 BEA 報告書 | 失敗事例として強い |
-| 重み付き連続ブレンド（人間-人間） | Khademian & Hashtrudi-Zaad (IEEE/ASME 2011, T-RO 2013) | dominance factor α |
-| 重み付き連続ブレンド（人間-AI） | Dragan & Srinivasa (IJRR 2013) | policy blending formalism、Mediator の数学的雛形 |
-| 部分空間分割 | Malysz & Sirouspour (IJRR 2011) | projective force mapping |
-| 空間動的投票 | Goldberg & Song (ICRA 2002) | Tele-Actor / SDV |
-| 投票方式の経験比較 | Salam et al. (AAMAS 2015) | Leader / Average / Median |
-| ハプティック機械結合 | Takagi et al. (eLife 2019) | 3-4 人結合で性能向上 |
-| 無秩序 vs 多数決 | Twitch Plays Pokemon 系研究 | anarchy vs democracy 経験比較 |
-| 信頼度重み融合 | Nguyen et al. (HRI 2025) | 自己申告信頼度、N=100 実験、直接競合 |
-| トークン受け渡し | da Vinci dual console 関連 | 完全切替型 |
+| Arithmetic mean | Airbus sidestick / AF447 BEA report | strong as a failure case |
+| Weighted continuous blend (human-human) | Khademian & Hashtrudi-Zaad (IEEE/ASME 2011, T-RO 2013) | dominance factor α |
+| Weighted continuous blend (human-AI) | Dragan & Srinivasa (IJRR 2013) | policy blending formalism, the mathematical template for the Mediator |
+| Subspace partitioning | Malysz & Sirouspour (IJRR 2011) | projective force mapping |
+| Spatial dynamic voting | Goldberg & Song (ICRA 2002) | Tele-Actor / SDV |
+| Empirical comparison of voting methods | Salam et al. (AAMAS 2015) | Leader / Average / Median |
+| Haptic mechanical coupling | Takagi et al. (eLife 2019) | performance improves with 3-4 person coupling |
+| Anarchy vs majority | Twitch Plays Pokemon-style studies | empirical comparison of anarchy vs democracy |
+| Confidence-weighted fusion | Nguyen et al. (HRI 2025) | self-reported confidence, N=100 experiment, direct competitor |
+| Token passing | da Vinci dual-console related | full-switchover type |
 
-### ロボティクス全般トレンド（卒研スコープ外、Intro の背景・対比に使えるかも）
+### General robotics trends (out of thesis scope; possibly usable as Intro background / contrast)
 
-サーベイ済み（2026-04 時点）。本卒研は採用しないが、選定理由を残す：
-- VLA / 基盤モデル：学部生範囲外（資源・経験不足）
-- ヒューマノイド：ハードが届かない、指導者観点で短命と判断
-- 模倣学習 / 拡散ポリシー：学生のCS経験で実装重い
-- モバイルマニピュレーション：アーム無し、複雑系から遠い
-- Sim-to-Real：学生の興味として却下
-- 触覚センシング：学生の興味として却下
-- スワーム：指導者の経験 gap が大きく継承不可
-- エッジAI / TinyML：学生の興味として却下
+Surveyed (as of 2026-04). This thesis does not adopt them, but the rationale for the choices is kept:
+- VLA / foundation models: out of an undergraduate's range (resource / experience shortage)
+- Humanoids: hardware doesn't arrive; judged short-lived from the advisor's viewpoint
+- Imitation learning / diffusion policy: heavy to implement given the student's CS experience
+- Mobile manipulation: no arm, far from complex systems
+- Sim-to-Real: rejected as the student's interest
+- Tactile sensing: rejected as the student's interest
+- Swarm: the advisor's experience gap is too large to inherit
+- Edge AI / TinyML: rejected as the student's interest
 
-## ハード調査結果（実装時に参照）
+## Hardware investigation results (refer to during implementation)
 
-### M5StickC Plus2 の外部 GPIO（運用機）
-- ESP32-PICO-V3-02、Flash 8MB + PSRAM 2MB、バッテリ 200mAh
-- 内部 I2C（IMU、RTC、PMU 等）: SCL=GPIO 22, SDA=GPIO 21（M5Unified `In_I2C`）
-- Grove ポート（Port A、HY2.0-4P）: SCL=GPIO 33, SDA=GPIO 32（M5Unified `Ex_I2C` 標準割当）
-- HAT 8ピンヘッダ（P1 STICKIO）配列：pin1=GND, pin2=5VOUT, pin3=G26, pin4=G36, pin5=G0, pin6=BAT, pin7=3V3, pin8=5VIN（schematic 確認済、無印 StickC と同一）
-- TFT で占有: G15, G13, G14, G12, G5, G27（無印より画面が大きく G13 が使えなくなった点注意）
-- RoverC HAT 互換：pin3 G26=SCL / pin5 G0=SDA で動作、jumper 切替なし
+### M5StickC Plus2 external GPIO (operational unit)
+- ESP32-PICO-V3-02, Flash 8MB + PSRAM 2MB, battery 200mAh
+- Internal I2C (IMU, RTC, PMU, etc.): SCL=GPIO 22, SDA=GPIO 21 (M5Unified `In_I2C`)
+- Grove port (Port A, HY2.0-4P): SCL=GPIO 33, SDA=GPIO 32 (M5Unified `Ex_I2C` standard assignment)
+- HAT 8-pin header (P1 STICKIO) layout: pin1=GND, pin2=5VOUT, pin3=G26, pin4=G36, pin5=G0, pin6=BAT, pin7=3V3, pin8=5VIN (confirmed in schematic, same as the plain StickC)
+- Occupied by the TFT: G15, G13, G14, G12, G5, G27 (note that the screen is larger than the plain unit, so G13 can no longer be used)
+- RoverC HAT compatibility: works with pin3 G26=SCL / pin5 G0=SDA, no jumper switching
 
-### M5StickC無印 の外部 GPIO（予備機）
-- Grove ポート（4ピン HY2.0）: GPIO 32, GPIO 33（+ 5V/GND）— 半田なし
-- 底面 8ピン HY2.0 HAT: 同 GPIO 32/33 を共有 + 追加ピン（G0, G26, G36, G25）
-- 内部空き GPIO: 0, 26, 36（半田作業必要）
-- 外部に出ているのは GPIO 32, 33 の2本のみ
-- RoverC HAT は 無印で G26=SCL, G0=SDA 接続が定石
+### M5StickC plain external GPIO (spare unit)
+- Grove port (4-pin HY2.0): GPIO 32, GPIO 33 (+ 5V/GND) — no soldering
+- Bottom 8-pin HY2.0 HAT: shares the same GPIO 32/33 + extra pins (G0, G26, G36, G25)
+- Internal free GPIO: 0, 26, 36 (soldering required)
+- Only GPIO 32, 33 (two lines) are externally exposed
+- For the RoverC HAT, the standard on the plain unit is G26=SCL, G0=SDA
 
 ### M5Stack Timer Camera X
-- センサ: OV3660、3MP（最大 2048x1536）
+- Sensor: OV3660, 3MP (max 2048x1536)
 - ESP32-D0WDQ6-V3 + 8MB PSRAM
-- BM8563 RTC 内蔵（低消費電力スリープ用）
-- 底面 HY2.0-4P ポート: SCL=GPIO 13, SDA=GPIO 4, 5V, GND
-  - **半田なしで GPIO 4/13 にアクセス可能**
-  - I2C ラベルだが ESP32 側で汎用 GPIO として転用可能
-- カメラドライバ占有 GPIO: XCLK=27, SCCB=25/23, RESET=15, データ=32/35/34/5/39/18/36/19, VSYNC=22, HREF=26, PCLK=21
-  - **GPIO 4/13 はカメラに使われていない、汎用入力として使える**
+- BM8563 RTC built in (for low-power sleep)
+- Bottom HY2.0-4P port: SCL=GPIO 13, SDA=GPIO 4, 5V, GND
+  - **GPIO 4/13 accessible without soldering**
+  - Labeled I2C but repurposable as general-purpose GPIO on the ESP32 side
+- GPIO occupied by the camera driver: XCLK=27, SCCB=25/23, RESET=15, data=32/35/34/5/39/18/36/19, VSYNC=22, HREF=26, PCLK=21
+  - **GPIO 4/13 are not used by the camera and can be used as general-purpose inputs**
 
-### OV3660 外部トリガモード（不可確認済 2026-04-25）
-- Timer Camera X 公式 schematic（M5TimerCAM PDF）確認結果：**OV3660 FSIN ピンが基板上にパッド化されていない**。基板改造でも引き出し不可
-- espressif/esp32-camera ドライバ：`sensors/ov3660.c` `ov3660_regs.h` に FSIN/trigger/strobe の記述ゼロ。Issue #192（"Precise Frame Sync with 2 ESP32 Cameras"）はメンテナ me-no-dev が「不可能」コメントで stale
-- HY2.0 ポートの GPIO 4/13 は ESP32 にのみ接続、OV3660 とは絶縁
-- 結論：ハードウェア外部トリガによる同期は本ハード構成では実現不能
-- 採用する代替：ソフトウェアタイムスタンプ + ESP-NOW 時刻同期（同期方式セクション参照）
+### OV3660 external trigger mode (confirmed impossible 2026-04-25)
+- Checking the official Timer Camera X schematic (the M5TimerCAM PDF): **the OV3660 FSIN pin is not broken out to a pad on the board**. It cannot be pulled out even with board modification.
+- The espressif/esp32-camera driver: `sensors/ov3660.c` and `ov3660_regs.h` contain zero mention of FSIN/trigger/strobe. Issue #192 ("Precise Frame Sync with 2 ESP32 Cameras") is stale with an "impossible" comment from maintainer me-no-dev.
+- GPIO 4/13 on the HY2.0 port connect only to the ESP32, isolated from the OV3660.
+- Conclusion: synchronization via a hardware external trigger is infeasible on this hardware configuration.
+- Adopted alternative: software timestamps + ESP-NOW time sync (see the Synchronization scheme section)
 
-### ソフトトリガ精度（参考）
-- センサは XCLK でフリーラン、`esp_camera_fb_get()` はキューから完了済みフレームを返すだけ（撮影起動ではない）
-- 取得モード：`CAMERA_GRAB_LATEST` で常に最新 N 枚を保持
-- 2台のカメラの VSYNC 位相は独立、同時 `fb_get()` してもフレーム周期（30fps で ~33ms）以内のズレが発生
-- 解決：フレームごとに `camera_fb_t.timestamp`（VSYNC 直後のタイムスタンプ、`struct timeval`）を記録、後処理で最近接ペアリング
+### Soft-trigger accuracy (reference)
+- The sensor free-runs on XCLK; `esp_camera_fb_get()` merely returns a completed frame from the queue (it does not initiate a capture)
+- Acquisition mode: `CAMERA_GRAB_LATEST` always keeps the latest N frames
+- (Stereo-era problem) The VSYNC phases of two cameras are independent; even calling `fb_get()` simultaneously produces skew within a frame period (~33ms at 30fps) → going monocular removes the need for inter-camera pairing
+- Solution: record `camera_fb_t.timestamp` per frame (the timestamp right after VSYNC, a `struct timeval`) and do nearest-neighbor alignment with robot state in post (in the stereo era it was also used for nearest-neighbor pairing of left/right frames)
 
-### 関連プロジェクト
-- **espressif/esp32-camera Issue #192** "Precise Frame Sync with 2 ESP32 Cameras" — 2台精密同期の議論（stale）
-- **ESPNowCam** (hpsaturn) — ESP-NOW + WiFi-raw のストリーマ、1:N ブロードキャスト。**対応ボード一覧に Timer Camera X は含まれず**（FreenoveS3, XIAO S3, M5UnitCamS3 等の S3 系中心）
-- **PanoCama** (Hackaday) — デュアル ESP32-CAM のステレオパノラマ + OpenCV disparity
-- **Stereo Depth Perception on ESP32 S3** (Hackster) — ESP32-S3 単体 2 カメラ
-- Timer Camera X 専用のステレオ・複数台同期事例は調査範囲では見つからず
+### Related projects
+- **espressif/esp32-camera Issue #192** "Precise Frame Sync with 2 ESP32 Cameras" — discussion of precise 2-camera sync (stale)
+- **ESPNowCam** (hpsaturn) — an ESP-NOW + WiFi-raw streamer, 1:N broadcast. **The Timer Camera X is not in the supported-board list** (centered on S3-family boards like FreenoveS3, XIAO S3, M5UnitCamS3)
+- **PanoCama** (Hackaday) — dual ESP32-CAM stereo panorama + OpenCV disparity
+- **Stereo Depth Perception on ESP32 S3** (Hackster) — 2 cameras on a single ESP32-S3
+- No stereo / multi-camera-sync example specific to the Timer Camera X was found within the surveyed range
 
-### ESP-NOW（時刻同期プロトコル）
-- 2.4GHz 無線ハードウェアを WiFi と共有するが、AP 接続・IP スタックは不要。WiFi ドライバの中の一機能として実装
-- 250 バイト/パケット上限、broadcast または MAC 指定 unicast、典型遅延 数百μs〜数ms
-- M5StickC 系（Plus 含む）：**動作確認済み**（先例：teastainGit/RoverC-StickCPlus-ESP_NOW-Remote-Control、vkichline/BugController）。Plus2 は同 ESP32 系 SoC で原理的に動作可能、参考としてのみ
-- Timer Camera X：**未検証**。ESPNowCam 対応一覧外、カメラ DMA × WiFi 干渉報告あり（espressif/esp32-camera issue #620、`fb_count=2` で回避）
-- API は `WiFi.mode(WIFI_STA)` で無線部を起こし `esp_now_init()` 呼ぶ流れ。AP 接続なしでも動く
-- AP 併用時の制約：ESP-NOW チャネルは AP と同一、modem-sleep でパケット落ちあり（Espressif FAQ 明記）
-- 既存ライブラリ：ESPNowTimeSync（jensb1、作者主張 ±10〜50μs、第三者測定なし）、ESPNowMeshClock（Hemisphere-Project）、Espressif 公式 ESP-NOW サンプル
-- ハードタイムスタンプ取得不可：`esp_now_register_send_cb()` / `recv_cb()` は WiFi タスク経由の呼び出し、電波送出/受信の物理瞬間は取れない。コールバック内 `esp_timer_get_time()` が最早取得点
+### ESP-NOW (time-sync protocol)
+- Shares the 2.4GHz radio hardware with WiFi, but needs no AP association or IP stack. Implemented as one feature inside the WiFi driver.
+- 250 bytes/packet limit, broadcast or MAC-specified unicast, typical latency from hundreds of μs to a few ms
+- StickC family (including the Plus): **confirmed working** (precedents: teastainGit/RoverC-StickCPlus-ESP_NOW-Remote-Control, vkichline/BugController). The Plus2 is the same ESP32-family SoC so it can work in principle; for reference only.
+- Timer Camera X: **unverified**. Outside the ESPNowCam supported list; there are reports of camera DMA × WiFi interference (espressif/esp32-camera issue #620, avoided with `fb_count=2`)
+- The API flow is to bring up the radio with `WiFi.mode(WIFI_STA)` and call `esp_now_init()`. It works without an AP association.
+- Constraint when used alongside an AP: the ESP-NOW channel is the same as the AP, and packets drop with modem-sleep (stated in the Espressif FAQ)
+- Existing libraries: ESPNowTimeSync (jensb1, author claims ±10-50μs, no third-party measurement), ESPNowMeshClock (Hemisphere-Project), Espressif official ESP-NOW samples
+- Hardware timestamps cannot be obtained: `esp_now_register_send_cb()` / `recv_cb()` are called via the WiFi task; the physical instant of radio transmit/receive is unavailable. `esp_timer_get_time()` inside the callback is the earliest obtainable point.
 
-### camera_fb_t タイムスタンプ
-- `esp_camera.h` の `camera_fb_t` 構造体に `struct timeval timestamp` フィールドあり
-- 値：「フレームの最初の DMA バッファが書き始められた時刻」（VSYNC 直後）、起動からの経過時間
-- 複数機間で比較するには共通時計（**有線 I2C で StickC から配信されるマスタ時刻**）への変換が必要
+### camera_fb_t timestamp
+- The `camera_fb_t` struct in `esp_camera.h` has a `struct timeval timestamp` field
+- Value: "the time the first DMA buffer of the frame started being written" (right after VSYNC), elapsed time since boot
+- To compare with robot state (the StickC-side millis clock) it must be converted to a common clock (**the master time distributed from the StickC over wired I2C**) (in the stereo era this was also used for cross-unit comparison)
 
-## 検討から外したテーマ（参考）
+## Themes ruled out (reference)
 
-却下済みなので再提案不要：
-- Sim-to-Real、触覚センシング、スワーム、エッジAI（学生個人の興味として却下）
-- ヒューマノイド（短命と判断）
-- モバイルマニピュレーション（複雑系から遠い）
-- VLA・拡散ポリシーの本格学習（学生のCS経験不足で実装不可）
-- World Model / Free Energy Principle / 力学系解析（理論重すぎ、D進前提）
-- スワーム発展（指導者の経験との gap が大きすぎて継承不可）
-- Embodied Cognition（アリだが資料更新コスト・engagement リスクあり）
-- Physical Reservoir Computing（ハードより過ぎ）
-- 時刻同期＆遅延特性研究単独（理論寄り過ぎ、地味 → ただしデータ品質測定として組み込み）
+Already rejected, so no need to re-propose:
+- Sim-to-Real, tactile sensing, swarm, Edge AI (rejected as the student's personal interest)
+- Humanoids (judged short-lived)
+- Mobile manipulation (far from complex systems)
+- Full-scale learning of VLA / diffusion policy (infeasible given the student's lack of CS experience)
+- World Model / Free Energy Principle / dynamical-systems analysis (theory too heavy, premised on a PhD track)
+- Swarm extensions (the gap with the advisor's experience is too large to inherit)
+- Embodied Cognition (viable, but with material-update cost and engagement risk)
+- Physical Reservoir Computing (too hardware-leaning)
+- Time-sync & latency-characteristics research on its own (too theory-leaning and plain → but folded in as a data-quality measurement)
 
-## まだ決まっていないこと
+## Still undecided
 
-- ベースラインMediator の最終本数（2 or 3 or 4）
-- 入力装置の選定（ジョイスティック種別、ブラウザUIの有無）
-- 被験者実験（IRB範囲内 or 自己実験のみ）の有無 — 自己実験＋研究室メンバーで回す方針が現実的
-- 学生のPython学習リソース・ペース
-- データセットの公開方針（ライセンス、形式、公開先）
-- 上位研究プログラム（Mediator × Domain マップ）として指導者が公式に進めるかどうか
+- The final number of baseline Mediators (2 or 3 or 4)
+- Selection of input devices (joystick type, whether to have a browser UI)
+- Whether to run human-subject experiments (within IRB scope or self-experiment only) — self-experiment + lab members is the realistic plan
+- The student's Python learning resources and pace
+- The dataset's publication policy (license, format, venue)
+- Whether the advisor officially pursues the upper research program (the Mediator × Domain map)
 
-## エンジニアリング作業時の方針
+## Policy for engineering work
 
-- 直接答えてから補足する（質問にいきなり長い前置きを置かない）
-- 学生作業範囲かどうかを意識して提案する（指導者作業 / 学生作業を区別）
-- ハード触れる作業を優先候補に入れる（学生の好み）
-- 実装提案では「未経験者でも踏める階段」になっているかを意識する
-- データ品質と再現性を常に評価軸に含める（収集基盤としての価値の核）
+- Answer directly first, then add detail (don't open with a long preamble to a question)
+- Make proposals with awareness of whether something is in the student's scope (distinguish advisor work / student work)
+- Put hardware-touching work among the priority candidates (the student's preference)
+- In implementation proposals, be conscious of whether it forms "a staircase even a beginner can climb"
+- Always include data quality and reproducibility among the evaluation axes (the core of the value as a collection foundation)

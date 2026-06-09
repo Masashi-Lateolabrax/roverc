@@ -15,9 +15,9 @@ The RoverC HAT plugs into the bottom 8-pin header of the StickC Plus2:
 ```sh
 # from repo root, after editing config.json
 arduino-cli lib install ArduinoJson
-./flash.sh                  # auto-detect port
-./flash.sh /dev/ttyACM0     # explicit port
-./flash.sh --list           # show connected boards
+./flash.sh arduino_src/roverc_server               # auto-detect port
+./flash.sh arduino_src/roverc_server /dev/ttyACM0  # explicit port
+./flash.sh --list                                  # show connected boards
 ```
 
 `secrets.h` is generated from `config.json` (gitignored). Re-run `uv run scripts/gen_secrets.py` whenever WiFi credentials, port, or control parameters change.
@@ -64,5 +64,5 @@ Single JSON packet, UTF-8:
 ## Bring-up notes
 
 - Mecanum sign convention varies by chassis wiring. If a wheel spins the wrong way, flip the corresponding `SIGN_M*` constant in `roverc_server.ino`.
-- Start with `control.max_motor` low (60) in config.json, raise after sign verification.
+- Start with `motor.max_motor` low (60) in config.json, raise after sign verification.
 - DHCP may give a different IP on each boot. Read it from the LCD and pass it to `teleop.py` (prompt or `--host`).

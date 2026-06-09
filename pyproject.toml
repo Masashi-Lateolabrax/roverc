@@ -4,8 +4,7 @@ version = "0.1.0"
 requires-python = ">=3.9"
 dependencies = [
     "pygame>=2.6.1",
-    "numpy>=1.26",
-    "cma>=3.3",
+    "opencv-python>=4.10",
 ]
 
 [dependency-groups]
@@ -17,7 +16,7 @@ dev = [
 [tool.ruff]
 line-length = 100
 target-version = "py39"
-src = ["src/python_client", "scripts"]
+src = ["src/crover_mod", "examples/teleop", "examples/motor_tuner", "scripts"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP"]
@@ -26,7 +25,7 @@ ignore = [
 ]
 
 [tool.pyright]
-include = ["src/python_client", "scripts"]
-extraPaths = ["src/python_client"]
+include = ["src/crover_mod", "examples/teleop", "examples/motor_tuner", "scripts"]
+extraPaths = ["src/crover_mod"]
 pythonVersion = "3.9"
 reportMissingImports = "warning"
