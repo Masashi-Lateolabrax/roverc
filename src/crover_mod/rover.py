@@ -48,15 +48,15 @@ class Rover:
         self._client = RoverCClient(host, self.port, camera_registry=self._registry)
         self._streams: dict[str, CameraStream] = {}
         self._closed = False
-        # Current motion setpoint, resent continuously so the firmware failsafe
-        # (stops the motors if no command arrives for ~200 ms) keeps the rover
-        # moving until the next move()/stop(). Callers set it once and walk away.
-        self._target = (0.0, 0.0, 0.0)
-        self._target_lock = threading.Lock()
-        self._motion_thread = threading.Thread(
-            target=self._motion_loop, name="RoverMotion", daemon=True
+        # The firmware failsafe is driven by a periodic liveness heartbeat, not
+        # by the motion command: a setpoint sent via move() is held firmware-side
+        # until the next move()/stop(), while this background thread keeps the
+        # heartbeat alive at 20 Hz (well inside the ~200 ms failsafe). If this
+        # thread or the link dies, the heartbeat lapses and the motors stop.
+        self._heartbeat_thread = threading.Thread(
+            target=self._heartbeat_loop, name="RoverHeartbeat", daemon=True
         )
-        self._motion_thread.start()
+        self._heartbeat_thread.start()
         # Listen for the camera's own UDP announce so discovery works even
         # without the StickC relaying camera state.
         self._announce_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -77,8 +77,8 @@ class Rover:
         rover arcs. `direction`'s length and `turn` are fractions of full motor
         output: a norm of 1 (or more, capped to 1) is full output, which the
         firmware mecanum-mixes and scales by config motor.max_motor. Returns
-        immediately; the setpoint is held (and resent) until the next
-        move()/stop()."""
+        immediately; the setpoint is sent once and held firmware-side (kept
+        alive by the background heartbeat) until the next move()/stop()."""
         vx, vy = float(direction[0]), float(direction[1])
         norm = math.hypot(vx, vy)
         if norm > 1.0:
@@ -86,20 +86,15 @@ class Rover:
         # Firmware mixing makes wz > 0 spin clockwise; negate so the API's
         # turn > 0 means CCW (standard right-hand convention).
         wz = -max(-1.0, min(1.0, float(turn)))
-        with self._target_lock:
-            self._target = (vx, vy, wz)
+        self._client.send_motion(vx, vy, wz)
 
     def stop(self) -> None:
-        with self._target_lock:
-            self._target = (0.0, 0.0, 0.0)
         self._client.send_motion(0.0, 0.0, 0.0)
 
-    def _motion_loop(self) -> None:
+    def _heartbeat_loop(self) -> None:
         while not self._closed:
-            with self._target_lock:
-                vx, vy, wz = self._target
-            self._client.send_motion(vx, vy, wz)
-            time.sleep(0.02)  # 50 Hz, well inside the ~200 ms firmware failsafe
+            self._client.send_heartbeat()
+            time.sleep(0.05)  # 20 Hz, well inside the ~200 ms firmware failsafe
 
     def push_motor_config(self) -> int:
         """Push the motor coefficient table from config to the firmware.
@@ -170,7 +165,7 @@ class Rover:
 
     def close(self) -> None:
         self._closed = True
-        self._motion_thread.join(timeout=1.0)
+        self._heartbeat_thread.join(timeout=1.0)
         for stream in self._streams.values():
             stream.stop()
         self._client.close()

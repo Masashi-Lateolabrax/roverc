@@ -3,7 +3,13 @@
 Wire protocol on a single UDP socket (PC <-> StickC):
 
 PC -> StickC
-- motion packet (JSON): {"t": ..., "vx": ..., "vy": ..., "wz": ...}
+- heartbeat (binary, magic 0xA0, 1 B): liveness only. The firmware failsafe is
+  driven SOLELY by heartbeat arrival -- if none lands for FAILSAFE_MS the motors
+  are zeroed. Motion packets do NOT refresh it, so this must be sent periodically
+  (well inside the failsafe window) for the rover to act on any setpoint.
+- motion packet (JSON): {"t": ..., "vx": ..., "vy": ..., "wz": ...}. Sets the
+  setpoint, which the firmware holds until the next motion packet -- send once
+  per change, not continuously.
 - config packet (JSON): {"cfg": {"mx": ..., "tel": ...}}
 - polynomial chunk (binary, magic 0xC0, 60 B): per-cell coefficients and
   phase durations -- see `coefs.py`
@@ -25,6 +31,10 @@ import time
 from typing import Callable
 
 from camera import CameraRegistry
+
+# 1-byte liveness heartbeat the firmware uses to drive its failsafe (see the
+# module docstring). Must match HEARTBEAT_MAGIC in roverc_server.ino.
+HEARTBEAT_MAGIC = b"\xa0"
 
 
 class RoverCClient:
@@ -49,6 +59,11 @@ class RoverCClient:
                 target=self._rx_loop, name="RoverCClientRx", daemon=True
             )
             self._rx_thread.start()
+
+    def send_heartbeat(self) -> None:
+        """Send the 1-byte liveness heartbeat. Must be called periodically,
+        well inside the firmware failsafe window, or the motors are zeroed."""
+        self._sock.sendto(HEARTBEAT_MAGIC, self._addr)
 
     def send_motion(self, vx: float, vy: float, wz: float, t: float | None = None) -> None:
         pkt = {"t": t if t is not None else time.time(), "vx": vx, "vy": vy, "wz": wz}

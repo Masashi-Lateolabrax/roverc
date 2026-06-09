@@ -70,6 +70,13 @@ static_assert(POLY_CHUNK_BYTES == 60, "wire format size drift");
 // Per-wheel sign flips. Adjust during bring-up if a wheel spins the wrong way.
 static constexpr int8_t SIGN_M[4] = {+1, +1, +1, +1};  // FL, FR, RL, RR
 
+// PC -> StickC liveness heartbeat: a 1-byte UDP datagram (magic 0xA0).
+// The failsafe is driven SOLELY by heartbeat arrival, never by motion packets:
+// a motion command sets the setpoint and it persists until the next command,
+// while the heartbeat is the independent liveness contract -- if it lapses for
+// FAILSAFE_MS the motors are zeroed regardless of how recently a command came.
+static constexpr uint8_t HEARTBEAT_MAGIC = 0xA0;
+
 WiFiUDP udp;
 
 struct Motion {
@@ -157,7 +164,7 @@ static Motion g_cmd;
 static ServerConfig g_cfg;
 static MotorState g_motor_state[4];
 static WheelCoefs g_poly[4];
-static uint32_t g_last_packet_ms = 0;
+static uint32_t g_last_heartbeat_ms = 0;
 static uint32_t g_packets_received = 0;
 static uint32_t g_configs_received = 0;
 static uint32_t g_poly_chunks_received = 0;
@@ -589,6 +596,16 @@ static void poll_udp() {
   int n = udp.read(buf, sizeof(buf));
   if (n <= 0) return;
 
+  // 1-byte liveness heartbeat (magic 0xA0): refresh the failsafe timer and
+  // remember the sender for telemetry / camera-state routing. Carries no
+  // motion -- the setpoint is owned by the motion packets below.
+  if (n >= 1 && buf[0] == HEARTBEAT_MAGIC) {
+    g_last_heartbeat_ms = millis();
+    g_last_sender = udp.remoteIP();
+    g_last_sender_port = udp.remotePort();
+    return;
+  }
+
   // Binary polynomial cfg chunk -- magic byte distinguishes it from the
   // ASCII JSON envelope (which always starts with '{').
   if (n >= static_cast<int>(POLY_CHUNK_BYTES) && buf[0] == POLY_CHUNK_MAGIC) {
@@ -610,11 +627,12 @@ static void poll_udp() {
     return;  // config-only packet; do not update motion
   }
 
+  // Motion sets the setpoint and it persists until the next motion packet;
+  // it does NOT refresh the failsafe timer (that is the heartbeat's job).
   g_cmd.vx = doc["vx"] | 0.0f;
   g_cmd.vy = doc["vy"] | 0.0f;
   g_cmd.wz = doc["wz"] | 0.0f;
   g_cmd.t = doc["t"] | 0.0;
-  g_last_packet_ms = millis();
   g_last_sender = udp.remoteIP();
   g_last_sender_port = udp.remotePort();
   g_packets_received++;
@@ -625,7 +643,7 @@ static void update_lcd() {
   if (now < g_next_lcd_ms) return;
   g_next_lcd_ms = now + 200;
 
-  uint32_t age = now - g_last_packet_ms;
+  uint32_t age = now - g_last_heartbeat_ms;
   bool failsafe = (age > FAILSAFE_MS);
 
   // Header (SSID + IP) occupies y=0..32 at textSize 2; body starts below.
@@ -703,7 +721,7 @@ void setup() {
   Serial.begin(115200);
   connect_wifi();
 
-  g_last_packet_ms = millis() - FAILSAFE_MS - 1;  // start in failsafe
+  g_last_heartbeat_ms = millis() - FAILSAFE_MS - 1;  // start in failsafe
   g_next_tick_ms = millis();
   g_next_tel_ms = millis();
 }
@@ -716,7 +734,7 @@ void loop() {
   }
   if (M5.BtnB.wasPressed()) {
     g_cmd = Motion{};
-    g_last_packet_ms = millis() - FAILSAFE_MS - 1;
+    g_last_heartbeat_ms = millis() - FAILSAFE_MS - 1;
   }
 
   poll_udp();
@@ -728,7 +746,7 @@ void loop() {
       g_next_tick_ms = now + CONTROL_PERIOD_MS;
     }
 
-    bool failsafe = (now - g_last_packet_ms > FAILSAFE_MS);
+    bool failsafe = (now - g_last_heartbeat_ms > FAILSAFE_MS);
     float vx = failsafe ? 0.0f : g_cmd.vx;
     float vy = failsafe ? 0.0f : g_cmd.vy;
     float wz = failsafe ? 0.0f : g_cmd.wz;
