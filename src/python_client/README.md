@@ -7,13 +7,15 @@ PC 側コード。ユーザ向けの起動・運用手順は **トップレベ�
 
 | File | Role |
 |---|---|
-| `teleop.py` | pygame マルチウィンドウ UI、UDP モーション送信、前方単眼カメラ表示 |
 | `calibrate.py` | CMA-ES ループによる多項式係数の自動校正 |
 | `roverc.py` | `RoverCClient`（UDP socket、JSON / binary 多重化、telemetry rx loop） |
 | `camera.py` | `CameraRegistry` + `CameraStream`（HTTP MJPEG 受信） |
 | `coefs.py` | 多項式係数の dataclass、JSON I/O、binary chunk encoder、CMA-ES vector pack/unpack |
 | `telemetry.py` | 0xD2 packet パーサ + thread-safe ring buffer |
-| `widgets.py` | pygame の Slider / Button / ChoiceRow |
+
+teleop UI アプリ（`teleop.py`）と専用 widget（`widgets.py`）は `examples/teleop/`
+へ移動した。teleop は本ディレクトリの共有ライブラリ（`camera` / `coefs` /
+`roverc` / `telemetry`）を sys.path 経由で import する。`examples/teleop/README.md` を参照。
 
 ## 依存関係
 

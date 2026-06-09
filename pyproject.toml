@@ -17,7 +17,7 @@ dev = [
 [tool.ruff]
 line-length = 100
 target-version = "py39"
-src = ["src/python_client", "scripts"]
+src = ["src/python_client", "examples/teleop", "scripts"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP"]
@@ -26,7 +26,7 @@ ignore = [
 ]
 
 [tool.pyright]
-include = ["src/python_client", "scripts"]
+include = ["src/python_client", "examples/teleop", "scripts"]
 extraPaths = ["src/python_client"]
 pythonVersion = "3.9"
 reportMissingImports = "warning"

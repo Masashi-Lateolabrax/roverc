@@ -60,10 +60,10 @@ arduino-cli lib install M5Unified ArduinoJson
 
 ```sh
 # StickC LCD に出る IP を直接渡す
-uv run src/python_client/teleop.py --host 192.168.1.123
+uv run examples/teleop/teleop.py --host 192.168.1.123
 
 # 校正済の多項式係数を起動時にプッシュする
-uv run src/python_client/teleop.py --host 192.168.1.123 --coefs coefs/identity.json
+uv run examples/teleop/teleop.py --host 192.168.1.123 --coefs coefs/identity.json
 ```
 
 3 ウィンドウ（input / settings / cameras）が開く。input 窓にフォーカスして以下：
@@ -109,7 +109,7 @@ uv run python src/python_client/calibrate.py \
 校正後：
 
 ```sh
-uv run src/python_client/teleop.py --host <IP> --coefs coefs/v1.json
+uv run examples/teleop/teleop.py --host <IP> --coefs coefs/v1.json
 ```
 
 研究データ収集セッションは **校正済係数を固定** で運用する（platform

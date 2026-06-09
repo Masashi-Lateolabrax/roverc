@@ -7,7 +7,7 @@ Three pygame windows (SDL2 multi-window):
   - Cameras: the single front monocular JPEG stream
 
 Usage:
-    uv run src/python_client/teleop.py --host 192.168.1.123
+    uv run examples/teleop/teleop.py --host 192.168.1.123
 """
 from __future__ import annotations
 
@@ -15,26 +15,30 @@ import argparse
 import io
 import json
 import sys
+import threading
 import time
 from pathlib import Path
 
 import pygame
 from pygame._sdl2.video import Renderer, Texture, Window
 
-from camera import (
+# Make the shared python_client library importable without installing it.
+# (widgets lives next to this script and resolves via the script dir.)
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src" / "python_client"))
+
+from camera import (  # noqa: E402
     FRAMESIZE_CHOICES,
     CameraInfo,
     CameraRegistry,
     CameraStream,
     set_camera_params,
 )
-from coefs import load_json as load_coefs_json
-from coefs import push_to_firmware as push_coefs
-from roverc import RoverCClient
-from telemetry import TelemetryPacket, parse as parse_telemetry
-from widgets import Button, ChoiceRow, Slider
-
-import threading
+from coefs import load_json as load_coefs_json  # noqa: E402
+from coefs import push_to_firmware as push_coefs  # noqa: E402
+from roverc import RoverCClient  # noqa: E402
+from telemetry import TelemetryPacket  # noqa: E402
+from telemetry import parse as parse_telemetry  # noqa: E402
+from widgets import Button, ChoiceRow, Slider  # noqa: E402
 
 KEY_VX = 1.0
 KEY_VY = 1.0
