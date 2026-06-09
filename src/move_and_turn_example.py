@@ -26,9 +26,9 @@ def main() -> int:
     print("forward 3 s / spin 2 s, repeating (Ctrl-C to stop)")
     try:
         while True:
-            rover.move((1.0, 0.0))  # forward at full throttle (-> max_throttle)
+            rover.move((1.0, 0.0), turn=0.0)  # forward, no rotation
             time.sleep(3)
-            rover.turn(1.0)         # spin in place, full throttle (> 0 = CCW)
+            rover.move((0.0, 0.0), turn=1.0)  # spin in place (> 0 = CCW)
             time.sleep(2)
     except KeyboardInterrupt:
         pass

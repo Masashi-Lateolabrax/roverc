@@ -76,26 +76,24 @@ class Rover:
 
     # -- motion ----------------------------------------------------------
 
-    def move(self, direction: tuple[float, float] | np.ndarray) -> None:
-        """Translate along `direction = (x, y)` (x forward, y strafe-left),
-        given as a 2-tuple or a length-2 numpy array. Its length is the throttle
-        fraction (clamped to 1); the heading is scaled by max_throttle. Returns
-        immediately; the setpoint is held (and resent) until the next
-        move()/turn()/stop()."""
+    def move(self, direction: tuple[float, float] | np.ndarray, turn: float) -> None:
+        """Set the motion setpoint: translate along `direction = (x, y)`
+        (x forward, y strafe-left; a 2-tuple or length-2 numpy array) while
+        rotating at `turn` (> 0 = CCW). Both can be nonzero at once, so the
+        rover arcs. `direction`'s length and `turn` are throttle fractions
+        (clamped to 1), each scaled by max_throttle. Returns immediately; the
+        setpoint is held (and resent) until the next move()/stop()."""
         vx, vy = float(direction[0]), float(direction[1])
         norm = math.hypot(vx, vy)
         if norm > 1.0:
             vx, vy = vx / norm, vy / norm
+        wz = max(-1.0, min(1.0, float(turn)))
         with self._target_lock:
-            self._target = (vx * self.max_throttle, vy * self.max_throttle, 0.0)
-
-    def turn(self, yaw: float) -> None:
-        """Spin in place. `yaw` is the throttle fraction (> 0 = CCW), clamped to
-        [-1, 1] and scaled by max_throttle. Held until the next
-        move()/turn()/stop()."""
-        yaw = max(-1.0, min(1.0, yaw))
-        with self._target_lock:
-            self._target = (0.0, 0.0, yaw * self.max_throttle)
+            self._target = (
+                vx * self.max_throttle,
+                vy * self.max_throttle,
+                wz * self.max_throttle,
+            )
 
     def stop(self) -> None:
         with self._target_lock:
