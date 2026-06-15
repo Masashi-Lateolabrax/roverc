@@ -10,8 +10,6 @@ void setup() {
       "front",
       WIFI_SSID,
       WIFI_PASSWORD,
-      CAMERA_ANNOUNCE_PORT,
-      CAMERA_ANNOUNCE_INTERVAL_MS,
   };
   camera_main_setup(cfg);
 }

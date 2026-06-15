@@ -48,10 +48,6 @@ def main() -> int:
     failsafe_ms = int(cfg["control"]["failsafe_ms"])
     max_motor = int(cfg["motor"]["max_motor"])
 
-    camera_cfg = cfg.get("camera", {})
-    announce_port = int(camera_cfg.get("announce_port", 4211))
-    announce_interval_ms = int(camera_cfg.get("announce_interval_ms", 1000))
-
     if not 1 <= port <= 65535:
         print(f"server.port out of range: {port}", file=sys.stderr)
         return 1
@@ -60,15 +56,6 @@ def main() -> int:
         return 1
     if not 0 <= max_motor <= 127:
         print(f"motor.max_motor out of range: {max_motor}", file=sys.stderr)
-        return 1
-    if not 1 <= announce_port <= 65535:
-        print(f"camera.announce_port out of range: {announce_port}", file=sys.stderr)
-        return 1
-    if not 50 <= announce_interval_ms <= 60000:
-        print(
-            f"camera.announce_interval_ms out of range: {announce_interval_ms}",
-            file=sys.stderr,
-        )
         return 1
 
     content = (
@@ -80,8 +67,6 @@ def main() -> int:
         f"#define CONTROL_RATE_HZ {rate_hz}\n"
         f"#define FAILSAFE_MS {failsafe_ms}\n"
         f"#define MAX_MOTOR {max_motor}\n"
-        f"#define CAMERA_ANNOUNCE_PORT {announce_port}\n"
-        f"#define CAMERA_ANNOUNCE_INTERVAL_MS {announce_interval_ms}\n"
     )
 
     sketch_dirs = find_sketch_dirs(src_dir)

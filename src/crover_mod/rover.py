@@ -10,16 +10,16 @@ behind a small surface:
     rover.stop()
     rover.close()
 
-Camera discovery is automatic: the camera node broadcasts a UDP announce with
-its IP / HTTP port, and the StickC also relays camera state, so callers never
-deal with camera addresses. `get_camera()` returns the most recent decoded
-frame (or None until one arrives) and lazily opens the stream on first use.
+Camera discovery goes through the StickC only: the StickC probes the camera on
+its I2C bus and relays the camera's IP / HTTP port as camera state, so callers
+never deal with camera addresses. Because the only camera entry comes from this
+rover's own StickC relay, the entry is rover-specific even when several rovers
+share the LAN. `get_camera()` returns the most recent decoded frame (or None
+until one arrives) and lazily opens the stream on first use.
 """
 from __future__ import annotations
 
-import json
 import math
-import socket
 import threading
 import time
 from dataclasses import replace
@@ -57,16 +57,6 @@ class Rover:
             target=self._heartbeat_loop, name="RoverHeartbeat", daemon=True
         )
         self._heartbeat_thread.start()
-        # Listen for the camera's own UDP announce so discovery works even
-        # without the StickC relaying camera state.
-        self._announce_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self._announce_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self._announce_sock.bind(("", config.announce_port))
-        self._announce_sock.settimeout(0.5)
-        self._announce_thread = threading.Thread(
-            target=self._announce_loop, name="RoverAnnounce", daemon=True
-        )
-        self._announce_thread.start()
 
     # -- motion ----------------------------------------------------------
 
@@ -134,32 +124,12 @@ class Rover:
             set_camera_params(
                 info, framesize=self._cam_framesize, quality=self._cam_quality
             )
-        # The announce advertises /jpg (single shot); we want the MJPEG /stream.
+        # Force the MJPEG /stream endpoint (the relayed entry may carry a
+        # single-shot /jpg default).
         stream = CameraStream(replace(info, jpg_path="/stream"))
         stream.start()
         self._streams[role] = stream
         return stream
-
-    def _announce_loop(self) -> None:
-        while not self._closed:
-            try:
-                data, _ = self._announce_sock.recvfrom(2048)
-            except socket.timeout:
-                continue
-            except OSError:
-                break
-            try:
-                msg = json.loads(data.decode("utf-8"))
-            except (UnicodeDecodeError, json.JSONDecodeError):
-                continue
-            role = msg.get("role")
-            ip = msg.get("ip")
-            http_port = msg.get("http_port")
-            if isinstance(role, str) and isinstance(ip, str) and isinstance(http_port, int):
-                self._registry.update(
-                    role, ip, http_port, bool(msg.get("camera_ok", False)),
-                    jpg_path=str(msg.get("jpg_path", "/jpg")),
-                )
 
     # -- lifecycle -------------------------------------------------------
 
@@ -169,10 +139,6 @@ class Rover:
         for stream in self._streams.values():
             stream.stop()
         self._client.close()
-        try:
-            self._announce_sock.close()
-        except OSError:
-            pass
 
     def __enter__(self) -> Rover:
         return self

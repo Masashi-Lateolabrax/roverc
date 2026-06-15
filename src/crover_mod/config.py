@@ -1,10 +1,10 @@
 """Typed access to config.json.
 
 `Config` loads the project config file once from an explicit path and exposes
-the sections the Python client needs (server port, camera announce port, camera
-framesize / quality, and the raw dict for the motor coefficient table). Examples
-build one at startup and hand it to `Rover`, so the config path lives in the
-example, not buried inside the library.
+the sections the Python client needs (server port, camera framesize / quality,
+and the raw dict for the motor coefficient table). Examples build one at startup
+and hand it to `Rover`, so the config path lives in the example, not buried
+inside the library.
 
     config = Config("config.json")
     rover = Rover(host, config, max_throttle=0.5)
@@ -27,11 +27,6 @@ class Config:
     def port(self) -> int:
         """UDP control port the StickC server listens on (server.port)."""
         return int(self.raw.get("server", {}).get("port", 4210))
-
-    @property
-    def announce_port(self) -> int:
-        """UDP port the camera broadcasts its announce on (camera.announce_port)."""
-        return int(self.raw.get("camera", {}).get("announce_port", 4211))
 
     @property
     def camera_framesize(self) -> int | None:
