@@ -26,7 +26,7 @@ stage-2 (Timer Camera X JPEG over WiFi) と stage-3 (StickC I2C-mediated 双眼)
 ### sync WebServer は単一スレッド
 
 - arduino-esp32 の `WebServer` は handleClient() がブロッキング、persistent な `/stream` ハンドラが走っている間、他のエンドポイント（`/jpg`, `/control`, `/`）は応答しない
-- 加えて main loop も止まるので、`announce` / `check_camera_health` / `check_i2c_slave_health` が走らない
+- 加えて main loop も止まるので、`update_i2c_response` / `check_camera_health` / `check_i2c_slave_health` が走らない
 - **対策: handle_stream 内で `esp_task_wdt_reset()` 自前呼び出し + 1Hz tick で health check と `update_i2c_response` を走らせる**
 - `/control` は stream 中は届かないので、クライアントは設定変更時に stream を一度切る運用にする（今は使い分け不要）
 

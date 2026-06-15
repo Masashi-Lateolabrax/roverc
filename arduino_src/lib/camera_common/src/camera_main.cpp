@@ -1,13 +1,14 @@
-// Shared camera node logic: WiFi STA + esp32-camera + HTTP /jpg endpoint
-// + periodic UDP broadcast self-announce. The dispatching sketch supplies
-// a role string (the active rig uses "front"; "left"/"right"/"fisheye"
-// remain for the shelved stereo/fisheye lines) and the WiFi/announce params.
+// Shared camera node logic: WiFi STA + esp32-camera + HTTP /jpg endpoint.
+// The camera's IP reaches the PC only through the StickC, which probes this
+// node over I2C and relays its status frame; there is no UDP self-announce.
+// The dispatching sketch supplies a role string (the active rig uses "front";
+// "left"/"right"/"fisheye" remain for the shelved stereo/fisheye lines) and
+// the WiFi params.
 
 #include "camera_main.h"
 
 #include <Arduino.h>
 #include <WiFi.h>
-#include <WiFiUdp.h>
 #include "esp_wifi.h"
 #include <WebServer.h>
 #include <Wire.h>
@@ -92,12 +93,14 @@ static constexpr uint32_t BAT_DIV_NUM = 404;
 static constexpr uint32_t BAT_DIV_DEN = 267;
 
 static CameraConfig g_cfg = {};
-static WiFiUDP g_udp;
 static WebServer g_server(HTTP_PORT);
 
 static char g_device_id[32] = {0};   // "camera_<role>_<mac3>"
-static uint32_t g_seq = 0;
-static uint32_t g_next_announce_ms = 0;
+// The StickC reads the I2C status frame; refresh its contents (IP, vbat,
+// camera_ok) on this cadence so a freshly-acquired DHCP lease / battery
+// reading reaches the master within a second.
+static constexpr uint32_t I2C_REFRESH_INTERVAL_MS = 1000;
+static uint32_t g_next_i2c_refresh_ms = 0;
 static bool g_camera_ok = false;
 
 // Self-heal: every HEALTH_INTERVAL_MS, take a throwaway frame to confirm the
@@ -183,35 +186,6 @@ static bool connect_wifi(uint32_t timeout_ms) {
   esp_wifi_set_ps(WIFI_PS_NONE);
   Serial.println("WiFi: power save disabled (WIFI_PS_NONE)");
   return true;
-}
-
-static IPAddress broadcast_address() {
-  IPAddress ip = WiFi.localIP();
-  IPAddress mask = WiFi.subnetMask();
-  IPAddress bcast;
-  for (int i = 0; i < 4; i++) {
-    bcast[i] = (ip[i] & mask[i]) | (~mask[i] & 0xFF);
-  }
-  return bcast;
-}
-
-static void send_announce() {
-  IPAddress bcast = broadcast_address();
-  IPAddress ip = WiFi.localIP();
-  char buf[220];
-  int n = snprintf(
-      buf, sizeof(buf),
-      "{\"id\":\"%s\",\"role\":\"%s\",\"ip\":\"%u.%u.%u.%u\","
-      "\"http_port\":%u,\"jpg_path\":\"/jpg\",\"camera_ok\":%s,"
-      "\"seq\":%lu,\"uptime_ms\":%lu}",
-      g_device_id, g_cfg.role, ip[0], ip[1], ip[2], ip[3],
-      (unsigned)HTTP_PORT, g_camera_ok ? "true" : "false",
-      (unsigned long)g_seq, (unsigned long)millis());
-  if (n <= 0) return;
-  g_udp.beginPacket(bcast, g_cfg.announce_port);
-  g_udp.write((const uint8_t *)buf, n);
-  g_udp.endPacket();
-  g_seq++;
 }
 
 static framesize_t g_current_framesize = FRAMESIZE_QVGA;
@@ -641,8 +615,6 @@ void camera_main_setup(const CameraConfig &cfg) {
     ESP.restart();
   }
 
-  g_udp.begin(g_cfg.announce_port);
-
   g_server.on("/", handle_root);
   g_server.on("/jpg", handle_jpg);
   g_server.on("/stream", handle_stream);
@@ -654,7 +626,7 @@ void camera_main_setup(const CameraConfig &cfg) {
   i2c_slave_init(cfg.role);
   g_last_i2c_request_ms = millis();
 
-  g_next_announce_ms = millis();
+  g_next_i2c_refresh_ms = millis();
   g_next_health_ms = millis() + HEALTH_INTERVAL_MS;
 
 #if ESP_IDF_VERSION_MAJOR >= 5
@@ -685,10 +657,9 @@ void camera_main_loop() {
   }
   g_server.handleClient();
   uint32_t now = millis();
-  if ((int32_t)(now - g_next_announce_ms) >= 0) {
+  if ((int32_t)(now - g_next_i2c_refresh_ms) >= 0) {
     update_i2c_response();
-    send_announce();
-    g_next_announce_ms = now + g_cfg.announce_interval_ms;
+    g_next_i2c_refresh_ms = now + I2C_REFRESH_INTERVAL_MS;
   }
   check_camera_health();
   check_i2c_slave_health();

@@ -10,10 +10,6 @@
     "rate_hz": 50,
     "failsafe_ms": 200
   },
-  "camera": {
-    "announce_port": 4211,
-    "announce_interval_ms": 1000
-  },
   "motor": {
     "max_motor": 60,
     "m_order": 2,
